@@ -1,0 +1,23 @@
+{
+  "_comment": "工艺点位表（外置，可用 Excel 生成）。structure: tag -> {elementId, slot, min, max, unit, label, steady, noise, alarmHigh?}",
+  "tags": {
+    "TI-R101":  { "elementId": "R-101", "slot": 0, "min": 60, "max": 120, "unit": "℃", "label": "反应温度", "steady": 90, "noise": 3, "alarmHigh": 100 },
+    "PI-R101":  { "elementId": "R-101", "slot": 1, "min": 0, "max": 0.6, "unit": "MPa", "label": "反应压力", "steady": 0.4, "noise": 0.03, "alarmHigh": 0.5 },
+    "TI-T101T": { "elementId": "T-101", "slot": 0, "min": 60, "max": 120, "unit": "℃", "label": "塔顶温度", "steady": 82, "noise": 2, "alarmHigh": 100 },
+    "TI-T101B": { "elementId": "T-101", "slot": 1, "min": 100, "max": 180, "unit": "℃", "label": "塔釜温度", "steady": 140, "noise": 4 },
+    "TI-T102T": { "elementId": "T-102", "slot": 0, "min": 40, "max": 100, "unit": "℃", "label": "塔顶温度", "steady": 65, "noise": 2 },
+    "TI-T102B": { "elementId": "T-102", "slot": 1, "min": 80, "max": 140, "unit": "℃", "label": "塔釜温度", "steady": 105, "noise": 3 },
+    "TI-T103T": { "elementId": "T-103", "slot": 0, "min": 60, "max": 120, "unit": "℃", "label": "塔顶温度", "steady": 78, "noise": 2 },
+    "TI-T103B": { "elementId": "T-103", "slot": 1, "min": 100, "max": 160, "unit": "℃", "label": "塔釜温度", "steady": 120, "noise": 3 },
+    "LI-V105":  { "elementId": "V-105", "slot": 0, "min": 0, "max": 100, "unit": "%", "label": "球罐液位", "steady": 62, "noise": 0.5 },
+    "AI-301":   { "elementId": "V-105", "slot": 1, "min": 90, "max": 100, "unit": "%", "label": "产品纯度", "steady": 97.3, "noise": 0.3 },
+    "FI-101":   { "elementId": "M-101", "slot": 0, "min": 0, "max": 20, "unit": "m³/h", "label": "进料流量", "steady": 12, "noise": 0.8 }
+  },
+  "pumps": ["P-101", "P-102", "P-103", "P-104", "P-105"],
+  "hazards": [
+    { "id": "TANK-FARM", "label": "罐区·易燃", "x": -47.5, "z": -32, "r": 20, "h": 7, "color": "0xff4444" },
+    { "id": "TOWER-AREA", "label": "塔区·高温", "x": 10, "z": 22, "r": 20, "h": 9, "color": "0xff8c2a" },
+    { "id": "REACTOR-AREA", "label": "反应区·带压", "x": -24, "z": 18, "r": 12, "h": 6, "color": "0xffd42a" },
+    { "id": "SPHERE", "label": "球罐·高压", "x": 55, "z": -32, "r": 10, "h": 5, "color": "0xff4444" }
+  ]
+}
