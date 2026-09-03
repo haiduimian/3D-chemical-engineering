@@ -11,6 +11,8 @@ const threeRoot = fileURLToPath(new URL('./node_modules/three', import.meta.url)
 
 export default defineConfig({
   plugins: [vue()],
+  // GitHub Pages 子路径部署：https://haiduimian.github.io/3D-chemical-engineering/
+  base: '/3D-chemical-engineering/',
   resolve: {
     alias: {
       'aurea-eden/lib': edenLib,

@@ -76,8 +76,8 @@ onMounted(() => {
   }
   scene.onTourStop = () => { tourOn.value = false }
   scene.start()
-  // 外置点位表加载（points.json）
-  fetch('/points.json').then(r => r.json()).then(d => { if (d?.tags) loadTagMap(d.tags) }).catch(() => {})
+  // 外置点位表加载（points.json，走 Vite base 前缀以兼容子路径部署）
+  fetch(import.meta.env.BASE_URL + 'points.json').then(r => r.json()).then(d => { if (d?.tags) loadTagMap(d.tags) }).catch(() => {})
 })
 
 function setMode(m: 'VIEW' | 'ANALYZE') { scene?.setMode(m) }
