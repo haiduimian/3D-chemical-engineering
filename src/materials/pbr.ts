@@ -93,6 +93,18 @@ export const machinedSteel = () => mat('machined', {
   envMapIntensity: 1.15,
 })
 
+/** 伴热管（R7）—— 哑光氧化铝皮。
+ *  原用 stainless()（metalness 0.92 / envMapIntensity 1.4 / anisotropy 0.55）：
+ *  细管在特定视角形成整条镜面白带（实测 brightPct 1.6~2.9% 的刺眼放射白光）。
+ *  工艺上伴热管带铝皮保温层 → 低金属感、高粗糙、弱环境反射 */
+export const traceTube = () => mat('trace', {
+  color: 0xa9afb5, metalness: 0.5, roughness: 0.62,
+  map: galvanizedTexture(), normalMap: jacketNormal(), normalScale: new THREE.Vector2(0.3, 0.3),
+  roughnessMap: grimeR,
+  clearcoat: 0.2, clearcoatRoughness: 0.5,
+  envMapIntensity: 0.45,
+})
+
 /** 泵体蓝 */
 export const pumpBody = () => mat('pump', {
   color: 0x1e5fa8, metalness: 0.32, roughness: 0.46 / GRIME_BASE,

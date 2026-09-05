@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import { pipeMaterial, PIPE_COLORS, structuralSteel, machinedSteel, concrete, stainless, insulation } from '../materials/pbr'
+import { pipeMaterial, PIPE_COLORS, structuralSteel, machinedSteel, concrete, stainless, insulation, traceTube } from '../materials/pbr'
 import type { PipeDef } from '../layout/plantLayout'
 import { PORTS, portWorldPos } from '../layout/ports'
 import { resolvePipePath, roundedPolyline } from './path'
@@ -35,9 +35,10 @@ function addTracingPipe(group: THREE.Group, curve: THREE.CatmullRomCurve3, def: 
     pts.push(p.clone().addScaledVector(side, offset).add(new THREE.Vector3(0, -def.diameter * 0.5, 0)))
   }
   const traceCurve = new THREE.CatmullRomCurve3(pts, false, 'catmullrom', 0)
+  // R7：材质 stainless() → traceTube()（哑光铝皮，消除特定角度整条镜面白带）
   const trace = new THREE.Mesh(
     new THREE.TubeGeometry(traceCurve, 160, 0.05, 8, false),
-    stainless(),
+    traceTube(),
   )
   group.add(trace)
   // 伴热管两端保温铝皮封头（端部收口，工艺真实感）

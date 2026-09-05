@@ -140,9 +140,11 @@ export const PIPES: PipeDef[] = [
     from: 'R101-OUT', to: 'T101-IN', via: [{ x: -21.7, z: 26 }, { x: -6, z: 26 }],
   },
   // 酸循环：T-101 塔釜 → P-104 → 反应器第二进料口（红线，经管廊返回）
+  // R7: viaY 6→5.4 —— 原 6.0 层与 pipe-r-t101 水平段交叉穿模（中心距 0.03m）；
+  //     降到 5.4 层后与 r-t101(6.0) 间隔 0.6m > 半径和 0.35m
   {
     id: 'pipe-acid-recycle', color: 'acrylicAcid', diameter: 0.3, flow: 0.7,
-    from: 'T101-BOT', to: 'R101-IN2', via: [{ pump: 'P-104' }],
+    from: 'T101-BOT', to: 'R101-IN2', via: [{ pump: 'P-104' }], viaY: 5.4,
   },
   // T-101 塔顶 → T-102 进料（高位层，从塔上方跨过）
   {
@@ -150,14 +152,20 @@ export const PIPES: PipeDef[] = [
     from: 'T101-TOP', to: 'T102-IN', viaY: 17,
   },
   // 甲醇循环：T-102 塔顶 → 混合器第二甲醇口（蓝线，经管廊返回）
+  // R7: viaY 8→17.5 —— 原 8.0 层竖直段在塔壁外侧与 t101-t102(17 层)正交交叉；
+  //     改至 17.5 高位跨廊层：竖直段缩短为 1.4m、与 17.0 层水平段三维间距 0.7m（安全），
+  //     水平段行走高度随"塔顶轻组分跨反应区"的工艺语义（高位放空/循环）
   {
     id: 'pipe-meoh-recycle', color: 'methanol', diameter: 0.35, flow: 0.8,
-    from: 'T102-TOP', to: 'M101-IN-MEOH2', viaY: 8, via: [{ x: -46, z: -6 }],
+    from: 'T102-TOP', to: 'M101-IN-MEOH2', viaY: 17.5, via: [{ x: -46, z: -6 }],
   },
   // T-102 塔釜 → T-103
+  // R7: viaY 6→4.0 —— 原 6.0 层水平段在 (10,·,23.4) 与 t101-t102 塔壁竖直段贴壁平行
+  //     （中心距 0.15m < 半径和）；降至 4.0 后竖直段只到 4.0m，与 ≥4.8m 的
+  //     塔壁竖直段最小间距 0.8m（安全）
   {
     id: 'pipe-t102-t103', color: 'overhead', diameter: 0.35, flow: 0.8,
-    from: 'T102-BOT', to: 'T103-IN',
+    from: 'T102-BOT', to: 'T103-IN', viaY: 4.0,
   },
   // 成品：T-103 塔釜 → 球罐（黄线，经管廊 z=28 东段）
   {
@@ -169,17 +177,20 @@ export const PIPES: PipeDef[] = [
     id: 'pipe-hq-main', color: 'inhibitor', diameter: 0.16, flow: 0.35,
     from: 'V104-OUT-1', to: 'P105-OUT', via: [{ pump: 'P-105' }],
   },
+  // R7: 三支管原共用 P105-OUT → 泵出口段完全重合；且支管与塔顶主流管线
+  //     (t101-t102/meoh-recycle) 在 T101-TOP/T102-TOP 端口段重合 0m。
+  //     修复：支管改接泵出口分流端口（±0.3m 错开）+ 塔顶副端口（z- 侧双注入口）
   {
     id: 'pipe-hq-t101', color: 'inhibitor', diameter: 0.12, flow: 0.3,
-    from: 'P105-OUT', to: 'T101-TOP', via: [{ x: -16, z: 24 }], viaY: 14,
+    from: 'P105-OUT', to: 'T101-TOP2', via: [{ x: -16, z: 24 }], viaY: 14,
   },
   {
     id: 'pipe-hq-t102', color: 'inhibitor', diameter: 0.12, flow: 0.3,
-    from: 'P105-OUT', to: 'T102-TOP', viaY: 20,
+    from: 'P105-OUT3', to: 'T102-TOP2', viaY: 20,
   },
   {
     id: 'pipe-hq-t103', color: 'inhibitor', diameter: 0.12, flow: 0.3,
-    from: 'P105-OUT', to: 'T103-TOP', viaY: 18,
+    from: 'P105-OUT2', to: 'T103-TOP2', viaY: 18,
   },
 ]
 

@@ -51,13 +51,21 @@ export const PORTS: Record<string, PortDef> = {
   // ── 塔区（IN 管口均位于塔 z+ 侧表面，dir 朝外，避免外延点插入塔体） ──
   'T101-IN':  { id: 'T101-IN', elementId: 'T-101', offset: [0, 4.8, 1.7], dir: [0, 0, 1], diameter: 0.4, kind: 'nozzle' },
   'T101-TOP': { id: 'T101-TOP', elementId: 'T-101', offset: [0, 20.8, 1.6], dir: [0, 0, 1], diameter: 0.35, kind: 'tankTop' },
-  'T101-BOT': { id: 'T101-BOT', elementId: 'T-101', offset: [0, 1.5, 1.6], dir: [0, 0, 1], diameter: 0.3, kind: 'tankBottom' },
+  // R7 塔顶副端口（z- 侧）：主流塔顶管线(T101-TOP)与阻聚剂支管共用端口曾完全重合(重叠 0m)，
+  // 支管改接副端口实现"塔顶双注入口"，两管几何错开 3.4m
+  'T101-TOP2': { id: 'T101-TOP2', elementId: 'T-101', offset: [0, 20.8, -1.9], dir: [0, 0, -1], diameter: 0.12, kind: 'tankTop' },
+  // R7: 塔釜出料管口 z+ 侧 → x+ 侧 —— 原与塔下部进料管口(T101-IN, z+ 侧)相距 0.1m，
+  //     两管竖直段平行贴管（碰撞检测 0.16m < 半径和）；分侧布置后成"对角双管口"
+  'T101-BOT': { id: 'T101-BOT', elementId: 'T-101', offset: [1.8, 1.5, 0], dir: [1, 0, 0], diameter: 0.3, kind: 'tankBottom' },
   'T102-IN':  { id: 'T102-IN', elementId: 'T-102', offset: [0, 4.8, 1.5], dir: [0, 0, 1], diameter: 0.35, kind: 'nozzle' },
   'T102-TOP': { id: 'T102-TOP', elementId: 'T-102', offset: [0, 18.9, 1.4], dir: [0, 0, 1], diameter: 0.35, kind: 'tankTop' },
+  'T102-TOP2': { id: 'T102-TOP2', elementId: 'T-102', offset: [0, 18.9, -1.8], dir: [0, 0, -1], diameter: 0.12, kind: 'tankTop' },
   'T102-BOT': { id: 'T102-BOT', elementId: 'T-102', offset: [0, 1.5, 1.4], dir: [0, 0, 1], diameter: 0.3, kind: 'tankBottom' },
   'T103-IN':  { id: 'T103-IN', elementId: 'T-103', offset: [0, 4.8, 1.6], dir: [0, 0, 1], diameter: 0.35, kind: 'nozzle' },
   'T103-TOP': { id: 'T103-TOP', elementId: 'T-103', offset: [0, 16.9, 1.5], dir: [0, 0, 1], diameter: 0.35, kind: 'tankTop' },
-  'T103-BOT': { id: 'T103-BOT', elementId: 'T-103', offset: [0, 1.5, 1.5], dir: [0, 0, 1], diameter: 0.3, kind: 'tankBottom' },
+  'T103-TOP2': { id: 'T103-TOP2', elementId: 'T-103', offset: [0, 16.9, -1.8], dir: [0, 0, -1], diameter: 0.12, kind: 'tankTop' },
+  // R7: 同 T101-BOT 原则 —— 塔釜出料移 x+ 侧，避免与 T103-IN 竖直段贴管
+  'T103-BOT': { id: 'T103-BOT', elementId: 'T-103', offset: [1.7, 1.5, 0], dir: [1, 0, 0], diameter: 0.3, kind: 'tankBottom' },
 
   // ── 泵（管线中途串接） ──
   ...pumpPorts('P-101'),
@@ -65,6 +73,10 @@ export const PORTS: Record<string, PortDef> = {
   ...pumpPorts('P-103'),
   ...pumpPorts('P-104'),
   ...pumpPorts('P-105'),
+  // R7 泵出口分流端口（阻聚剂三支管原共用 P105-OUT → 端口段完全重合 0m）：
+  // 按出口法兰实际宽度错开 0.3m，模拟"塔顶注剂三通分配"
+  'P105-OUT2': { id: 'P105-OUT2', elementId: 'P-105', offset: [-0.62, 1.68, 0.3], dir: [0, 1, 0], diameter: 0.12, kind: 'pumpOut' },
+  'P105-OUT3': { id: 'P105-OUT3', elementId: 'P-105', offset: [-0.62, 1.68, -0.3], dir: [0, 1, 0], diameter: 0.12, kind: 'pumpOut' },
 }
 
 /** 端口 → 世界坐标 */
