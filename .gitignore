@@ -5,3 +5,4 @@ dist
 *.log
 install*.log
 npm-ver.txt
+.shots
