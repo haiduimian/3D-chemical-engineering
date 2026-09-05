@@ -81,6 +81,30 @@ onMounted(() => {
 })
 
 function setMode(m: 'VIEW' | 'ANALYZE') { scene?.setMode(m) }
+
+// ── N1 时段切换（午后/黄昏/夜景，0.8s 平滑过渡） ──
+const timeOfDay = ref<'afternoon' | 'dusk' | 'night'>('dusk')
+function setTimeOfDay(t: 'afternoon' | 'dusk' | 'night') {
+  timeOfDay.value = t
+  scene?.setTimeOfDay(t)
+}
+
+// ── R9 性能面板（FPS/DrawCall/三角形/画质档，1s 节流采样） ──
+const showPerf = ref(false)
+const perf = ref({ fps: 0, calls: 0, tris: 0, textures: 0, tier: '-' })
+function togglePerf() {
+  showPerf.value = !showPerf.value
+  if (showPerf.value) {
+    perfTimer = window.setInterval(() => {
+      if (scene) Object.assign(perf.value, scene.perfStats)
+    }, 1000)
+  } else if (perfTimer) {
+    clearInterval(perfTimer)
+    perfTimer = 0
+  }
+}
+let perfTimer = 0
+onUnmounted(() => { if (perfTimer) clearInterval(perfTimer) })
 function flyTo(i: number) { scene?.stopTour(false); tourOn.value = false; scene?.flyTo(CAMERA_TOURS[i].pos as [number, number, number], CAMERA_TOURS[i].target as [number, number, number]) }
 function resetView() { flyTo(0) }
 function focusPipe(id: string) { scene?.focusPipe(id) }
@@ -246,6 +270,11 @@ onUnmounted(() => { scene?.dispose(); scene = null })
         <button :class="{ on: mode === 'VIEW' }" @click="setMode('VIEW')">总览 VIEW</button>
         <button :class="{ on: mode === 'ANALYZE' }" @click="setMode('ANALYZE')">工况 ANALYZE</button>
       </div>
+      <div class="seg" title="时段切换（天空/光照/路灯/环境反射联动）">
+        <button class="t-noon" :class="{ on: timeOfDay === 'afternoon' }" @click="setTimeOfDay('afternoon')">☀ 午后</button>
+        <button class="t-dusk" :class="{ on: timeOfDay === 'dusk' }" @click="setTimeOfDay('dusk')">🌇 黄昏</button>
+        <button class="t-night" :class="{ on: timeOfDay === 'night' }" @click="setTimeOfDay('night')">🌙 夜景</button>
+      </div>
       <button class="ghost" @click="resetView">复位视角</button>
       <button class="ghost" :class="{ on: tourOn }" @click="toggleTour">{{ tourOn ? '停止漫游' : '自动漫游' }}</button>
       <div class="search">
@@ -266,6 +295,7 @@ onUnmounted(() => { scene?.dispose(); scene = null })
       <div class="func-group">
         <b>视图</b>
         <button :class="{ on: heatOn }" @click="toggleHeat">热力图</button>
+        <button :class="{ on: showPerf }" @click="togglePerf">性能面板</button>
       </div>
       <div class="func-group">
         <b>巡检</b>
@@ -304,6 +334,16 @@ onUnmounted(() => { scene?.dispose(); scene = null })
     <div class="panel trend">
       <div class="panel-title">实时趋势（选中设备）</div>
       <canvas ref="trendCanvas" width="300" height="104"></canvas>
+    </div>
+
+    <!-- R9 性能面板 -->
+    <div v-if="showPerf" class="panel perf">
+      <div class="panel-title">性能（1s 采样）</div>
+      <div class="perf-row"><b>{{ perf.fps }}</b><span>FPS</span></div>
+      <div class="perf-row">{{ perf.calls }}<span>DrawCall</span></div>
+      <div class="perf-row">{{ perf.tris.toLocaleString() }}<span>三角形</span></div>
+      <div class="perf-row">{{ perf.textures }}<span>纹理</span></div>
+      <div class="perf-row">{{ perf.tier }}<span>画质档</span></div>
     </div>
 
     <!-- 右下：操作提示 / 消息 -->
@@ -392,6 +432,10 @@ onUnmounted(() => { scene?.dispose(); scene = null })
 .lg i { width: 22px; height: 5px; border-radius: 2px; display: inline-block; }
 .trend { bottom: 12px; left: 190px; width: 320px; }
 .trend canvas { width: 100%; border-radius: 6px; }
+.perf { bottom: 12px; left: 530px; width: 150px; }
+.perf-row { display: flex; justify-content: space-between; padding: 2px 0; font-family: monospace; font-size: 13px; color: #6fcf97; }
+.perf-row b { font-size: 15px; }
+.perf-row span { color: #8fa3b8; font-family: inherit; }
 .info { top: 70px; right: 12px; width: 280px; max-height: calc(100vh - 160px); overflow-y: auto; }
 .info-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px; }
 .tag { background: #185fa5; color: #fff; border-radius: 4px; padding: 2px 8px; font-size: 12px; font-family: monospace; }

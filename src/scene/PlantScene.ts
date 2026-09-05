@@ -12,7 +12,7 @@ import { buildEquipment } from '../shapes/plantShapes'
 import { buildPipe, animatePipes, animateGauges, setPipeHighlight, setPipeHeat, resetPipeHeat, type BuiltPipe } from '../connectors/pipes'
 import { pipeMidpoint } from '../connectors/path'
 import { buildEnvironment, buildWarningLights, animateSteam, animateFlare, animateDust, animateClouds, animateCityBeacons, type SteamPuff } from '../env/environment'
-import { SUN_DIRECTION } from '../env/sky'
+import { TimeOfDaySystem, normalizedTint, type PresetName } from '../env/timeOfDay'
 import { MockDataSource, TAG_MAP, norm, type TickCallback, type DeviceState } from '../data/processData'
 import { LeakEffect, FireEffect, buildHazardZones } from '../effects/safety'
 import { FirstPerson, PATROL_POINTS } from '../navigation/firstPerson'
@@ -63,12 +63,7 @@ const tealOrangeShader = {
   `,
 }
 
-/** 将颜色按亮度归一化为单位亮度 tint（亮度保持分级的关键） */
-function normalizedTint(hex: number): THREE.Color {
-  const c = new THREE.Color(hex)
-  const lum = 0.299 * c.r + 0.587 * c.g + 0.114 * c.b
-  return c.multiplyScalar(1 / Math.max(lum, 0.001))
-}
+/** 将颜色按亮度归一化为单位亮度 tint（亮度保持分级的关键，定义于 timeOfDay.ts 供时段系统复用） */
 
 /** Glsl 风格 smoothstep（JS 侧，报警灯斜坡用） */
 function smoothstep(edge0: number, edge1: number, x: number): number {
@@ -251,6 +246,14 @@ export class PlantScene {
   // 背景城区地标航空灯（闪烁）
   private cityBeacons: THREE.Mesh[] = []
 
+  // 时段系统（N1：午后/黄昏/夜景；public 供 UI 与自动化测试读取）
+  readonly timeSystem: TimeOfDaySystem
+  /** R9 性能统计（每 1s 采样，供性能面板/验收读取） */
+  readonly perfStats = { fps: 0, calls: 0, tris: 0, textures: 0, tier: 'weak' as string }
+  private perfFrames = 0
+  private perfLast = 0
+  private qualityTier: 'weak' | 'mid' | 'strong' = 'strong'
+
   // 回调
   onSelect: (id: string | null) => void = () => {}
   onModeChange: (m: 'VIEW' | 'ANALYZE') => void = () => {}
@@ -272,16 +275,24 @@ export class PlantScene {
     this.diagram = new Diagram(container, { theme: 'DARK', mode: 'VIEW' })
 
     const renderer = this.diagram.renderer
-    // 渲染预算：弱机自动降级
-    const weak = navigator.hardwareConcurrency ? navigator.hardwareConcurrency <= 4 : false
+    // ── R9 画质分档（弱/中/强）：核数 + 内存双维度（不再只看核数） ──
+    //   weak  (≤4 核 或 ≤2GB)  ：关阴影/SSAO/Bloom/GodRays/浮尘，dpr=1
+    //   mid   (≤8 核 或 ≤4GB)  ：主影 2048²、无核心影、dpr≤1.5
+    //   strong(>8 核)          ：主影 4096² + 核心影 2048²、dpr≤2
+    const cores = navigator.hardwareConcurrency || 8
+    const gpuMem = (navigator as unknown as { deviceMemory?: number }).deviceMemory ?? 4
+    const qualityTier: 'weak' | 'mid' | 'strong' =
+      cores <= 4 || gpuMem <= 2 ? 'weak' : (cores <= 8 || gpuMem <= 4 ? 'mid' : 'strong')
+    this.qualityTier = qualityTier
+    const weak = qualityTier === 'weak'
     renderer.shadowMap.enabled = !weak
     renderer.shadowMap.type = THREE.PCFSoftShadowMap
+    // R9：阴影按需更新（静态场景官方范式）——仅时段切换时 needsUpdate
+    renderer.shadowMap.autoUpdate = false
     // AgX：高光滚出平滑不猝死白、饱和度保持优于 ACES（ACES 会把金属压灰）
     // 工业可视化首选；若需更强"电影感"可切回 ACESFilmicToneMapping
     renderer.toneMapping = THREE.AgXToneMapping
-    // v10：0.62 → 0.85 —— 光照整体降档（sun 4.6→3.4 / IBL 0.55→0.38）后，
-    // 曝光回升把中间调放回正确位置，高光不过曝、暗部沉得下去
-    renderer.toneMappingExposure = 0.95
+    // 曝光由时段系统按预设托管（N1：黄昏 1.05，午后 1.12，夜景 1.35）
     ;(renderer.shadowMap as any).blurSamples = 8 // 落日柔和长影
     // 像素比：高分屏（DPI>1）必须按设备像素比渲染，否则全局模糊（拉远更明显）
     // 弱机降到 1 保帧率，其余封顶 2 兼顾清晰度与性能
@@ -314,7 +325,12 @@ export class PlantScene {
     this.diagram.controls.addEventListener('start', () => { if (this.tourOn) this.stopTour() })
     this.diagram.controls.update()
 
-    const env = buildEnvironment(this.diagram.scene, renderer, weak)
+    const env = buildEnvironment(
+      this.diagram.scene, renderer, weak,
+      qualityTier === 'weak'
+        ? { shadowSize: 0, coreShadow: false }
+        : { shadowSize: qualityTier === 'mid' ? 2048 : 4096, coreShadow: qualityTier !== 'mid' },
+    )
     this.steamPuffs = env.steamPuffs
     this.flame = env.flame
     this.dust = env.dust
@@ -376,6 +392,22 @@ export class PlantScene {
     this.composer.addPass(new ShaderPass(vignetteShader))
     this.composer.addPass(new OutputPass())
     window.addEventListener('resize', this.onComposerResize)
+
+    // ── N1 时段系统：午后/黄昏/夜景三档，托管天空/光照/雾/曝光/后期 ──
+    // 预设数值一律走 timeOfDay.ts（提亮去阴冷修正见黄昏档），后期句柄在此接线
+    this.timeSystem = new TimeOfDaySystem(
+      env.rig,
+      env.lights,
+      {
+        gradingUniforms: tealOrangeShader.uniforms as unknown as { shadowTint: { value: THREE.Color }, highlightTint: { value: THREE.Color }, amount: { value: number } },
+        vignetteUniforms: vignetteShader.uniforms as unknown as { intensity: { value: number } },
+        godRaysUniforms: this.godRays ? godRaysShader.uniforms as unknown as { strength: { value: number } } : null,
+      },
+      this.diagram.scene,
+      renderer,
+    )
+    this.perfStats.tier = qualityTier
+    this.perfLast = performance.now()
 
     this.buildAllEquipments()
     this.buildAllPipes()
@@ -615,6 +647,15 @@ export class PlantScene {
     if (this.analyzeVisible) this.flyTo([30, 45, 60], [5, 8, 10])
   }
 
+  /** N1 时段切换：afternoon 午后 / dusk 黄昏 / night 夜景（0.8s 平滑过渡） */
+  setTimeOfDay(name: PresetName) {
+    this.timeSystem.setPreset(name)
+  }
+
+  get timeOfDay(): PresetName {
+    return this.timeSystem.presetName
+  }
+
   flyTo(pos: [number, number, number], target: [number, number, number]) {
     this.flight = {
       from: this.diagram.camera.position.clone(),
@@ -832,6 +873,22 @@ export class PlantScene {
     const delta = this.clock.getDelta()
     const t = this.clock.elapsedTime
 
+    // N1 时段系统：每帧推进过渡插值（无过渡时近乎零开销）
+    this.timeSystem.update(t)
+
+    // R9 性能采样（1s 节流，渲染器 info 读取）
+    this.perfFrames++
+    const nowMs = performance.now()
+    if (nowMs - this.perfLast >= 1000) {
+      const info = this.diagram.renderer.info
+      this.perfStats.fps = Math.round(this.perfFrames * 1000 / (nowMs - this.perfLast))
+      this.perfStats.calls = info.render.calls
+      this.perfStats.tris = info.render.triangles
+      this.perfStats.textures = info.memory.textures
+      this.perfFrames = 0
+      this.perfLast = nowMs
+    }
+
     animatePipes(this.pipes, t)
 
     for (const g of this.equipmentGroups) {
@@ -897,18 +954,19 @@ export class PlantScene {
     // 巡检激活时跳过 OrbitControls 更新（PointerLock 负责旋转，避免被拉回）
     if (!this.firstPerson?.isActive) this.diagram.controls.update()
 
-    // R2 体积光：每帧重算太阳屏幕坐标（相机移动时方向随之变化）
+    // R2 体积光：每帧重算太阳屏幕坐标（相机移动/时段切换时方向随之变化）
     if (this.godRays) {
       const u = this.godRays.uniforms as unknown as {
         uSunRaw: { value: THREE.Vector2 }, uSun: { value: THREE.Vector2 },
       }
-      // 太阳方向转到相机空间（z>0 = 在相机前方）
-      const dirCam = SUN_DIRECTION.clone().transformDirection(this.diagram.camera.matrixWorldInverse)
+      // 太阳方向转到相机空间（z>0 = 在相机前方）；N1 起取时段系统实时方向
+      const sunDir = this.timeSystem.sunDirection
+      const dirCam = sunDir.clone().transformDirection(this.diagram.camera.matrixWorldInverse)
       const az = new THREE.Vector2(dirCam.x, dirCam.y)
       const azLen = az.length()
       if (dirCam.z > 0 && azLen > 1e-5) {
         // 太阳在屏内：真实投影位置（NDC → 归一化屏幕坐标）
-        const ndc = SUN_DIRECTION.clone().multiplyScalar(600).project(this.diagram.camera)
+        const ndc = sunDir.clone().multiplyScalar(600).project(this.diagram.camera)
         u.uSunRaw.value.set(ndc.x * 0.5 + 0.5, ndc.y * 0.5 + 0.5)
         u.uSun.value.copy(u.uSunRaw.value)
       } else if (azLen > 1e-5) {
@@ -974,6 +1032,7 @@ export class PlantScene {
     this.diagram.renderer.domElement.removeEventListener('pointerup', this.onPointerUp)
     this.diagram.renderer.domElement.removeEventListener('contextmenu', this.onContextMenu)
     this.composer?.dispose()
+    this.timeSystem.dispose()
     this.diagram.dispose()
   }
 }

@@ -1,12 +1,15 @@
 import * as THREE from 'three'
 import { concrete, structuralSteel, machinedSteel, paintedSteel } from '../materials/pbr'
-import { buildPhysicalSky, SUN_DIRECTION } from './sky'
+import { SkyRig } from './sky'
+import type { LightHandles } from './timeOfDay'
 
 /**
- * 装置环境 v9（黄昏/落日工业风 · 完整厂区）
+ * 装置环境 v10（N1 时段化 · 完整厂区）
  * v9 变更：物理大气散射天空（Preetham）替代渐变纹理背景；
  *          IBL 环境直接烘焙自天空（反射与可见天空物理一致）；
  *          移除假太阳圆盘/假体积光柱（廉价感来源）；雾色对齐天空地平线
+ * v10（N1）：天空/光照全量交由 SkyRig + 时段系统托管（午后/黄昏/夜景三档）；
+ *          灯组句柄（主光/补光/rim/半球/月光/路灯）返回给 PlantScene 接线
  * 光型：低角度暖橙落日主光（长影）+ 冷蓝天光补光 + 反向暖轮廓光(rim)
  * 配套：中控楼/仓库/办公楼/消防站/火炬塔/冷却塔/停车场/背景城区 + 安全标线
  */
@@ -281,13 +284,15 @@ function buildFence(scene: THREE.Scene) {
   scene.add(g)
 }
 
-/** 道路路灯（黄昏灯火初上：暖光自发光灯头 + 局部 PointLight） */
-function buildStreetLights(scene: THREE.Scene) {
+/** 道路路灯（黄昏灯火初上：暖光自发光灯头 + 局部 PointLight）
+ *  N1：灯头材质/点光强度交给时段系统（午后熄灭、夜景全功率） */
+function buildStreetLights(scene: THREE.Scene): { lights: THREE.PointLight[], lampMat: THREE.MeshStandardMaterial } {
   const g = new THREE.Group()
   const steel = structuralSteel()
   const lampMat = new THREE.MeshStandardMaterial({
     color: 0xffc37a, emissive: 0xffb066, emissiveIntensity: 6, roughness: 0.4,
   })
+  const pointLights: THREE.PointLight[] = []
   const xs = [-90, -60, -30, 0, 30, 60, 90]
   xs.forEach((x, i) => {
     const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.13, 6, 10), steel)
@@ -299,14 +304,16 @@ function buildStreetLights(scene: THREE.Scene) {
     const head = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.14, 0.3), lampMat)
     head.position.set(x, 5.9, -45.2)
     g.add(head)
-    // 仅中央 3 盏挂真实光源（控制光源数量）
+    // 仅中央 3 盏挂真实光源（控制光源数量；午后由时段系统置 0）
     if (i === 2 || i === 3 || i === 4) {
       const pl = new THREE.PointLight(0xffb066, 60, 30, 2)
       pl.position.set(x, 5.6, -45.2)
       g.add(pl)
+      pointLights.push(pl)
     }
   })
   scene.add(g)
+  return { lights: pointLights, lampMat }
 }
 
 /** 罐区安全设施：喷淋环管 / 泡沫枪立柱 / 静电接地桩 / 防火堤警示牌 */
@@ -1082,18 +1089,24 @@ export function animateCityBeacons(beacons: THREE.Mesh[], t: number) {
 }
 
 /**
- * 装置环境 v9 入口：物理天空 + 黄昏照明 + 大气雾 + 地坪/道路/围堰/管廊
- * + 道路细节/厂界围栏/路灯/罐区安全设施 + 剪影绿化
+ * 装置环境 v10（N1）入口：物理天空（SkyRig）+ 三档时段照明 + 大气雾 +
+ * 地坪/道路/围堰/管廊 + 道路细节/厂界围栏/路灯/罐区安全设施 + 剪影绿化
  * + 周边配套：中控楼/仓库/变电所/门卫/火炬塔/冷却塔/停车场/背景城区
  * + 行政办公/食堂/消防站/连接道路 + 云层
+ * 返回：环境动画句柄 + SkyRig + 灯组句柄（时段系统托管）
  */
-export function buildEnvironment(scene: THREE.Scene, renderer?: THREE.WebGLRenderer, weak = false): { steamPuffs: SteamPuff[], flame: THREE.Mesh, dust: THREE.Points | null, clouds: THREE.Group, cityBeacons: THREE.Mesh[] } {
-  // ── 物理天空 + IBL（环境反射直接烘焙自天空，与可见背景物理一致） ──
-  if (renderer) buildPhysicalSky(scene, renderer)
+export function buildEnvironment(scene: THREE.Scene, renderer?: THREE.WebGLRenderer, weak = false, quality?: { shadowSize: number; coreShadow: boolean }): {
+  steamPuffs: SteamPuff[], flame: THREE.Mesh, dust: THREE.Points | null,
+  clouds: THREE.Group, cityBeacons: THREE.Mesh[],
+  rig: SkyRig, lights: LightHandles,
+} {
+  // ── 物理天空 + IBL（N1：SkyRig 支持多预设懒烘焙，时段系统接管） ──
+  const rig = new SkyRig(scene, renderer!)
 
   // ── 大气雾：色相对齐物理天空地平线均值（暖灰橙），弱化"远景染色"强度 ──
   // v10：near/far 前移 —— 雾需可感知才有纵深（v9 的 300/950 几乎不可见）
-  scene.fog = new THREE.Fog(0xb5886a, 160, 780)
+  // N1：色值/距离由时段系统按预设接管（午后薄雾、夜景深蓝）
+  scene.fog = new THREE.Fog(0xc09b78, 150, 780)
 
   // ── 外部大地面（厂区外土地，承接背景城区，避免地平线穿帮） ──
   const outerGround = new THREE.Mesh(
@@ -1182,18 +1195,27 @@ export function buildEnvironment(scene: THREE.Scene, renderer?: THREE.WebGLRende
   mkRack(28, 15, 45)    // 塔区↔球罐支廊
   scene.add(rack)
 
-  // ── 黄昏照明（与物理天空太阳方向严格对齐）──
+  // ── 黄昏照明（与物理天空太阳方向严格对齐；N1 起全部数值由时段系统托管）──
   // v10 光比重构：核心是"恢复明暗比"。v9 直射 4.6 + 补光 0.7 + IBL 0.55 把暗部填满，
   // 全画面灰白无对比（= 劣质感蒙板）；现在压补光、保直射，让阴影沉下去。
-  // IBL（scene.environment）已提供基础天光漫反射，半球光只做低强度方向性补正
-  scene.add(new THREE.HemisphereLight(0x8fa2c8, 0xe0a070, 0.18))
+  // N1 提亮修正：曝光/IBL/主光/补光/rim/半球整体上调 + 降冷（见 timeOfDay.ts 黄昏档）
+  const streetRig = buildStreetLights(scene)
+  const streetLights = streetRig.lights
+  const streetLampMat = streetRig.lampMat
 
-  // 落日主光：方向 = SUN_DIRECTION（天空太阳/影子/高光三者自洽）
-  const sun = new THREE.DirectionalLight(0xffd2a0, 3.4)
-  sun.position.copy(SUN_DIRECTION).multiplyScalar(160)
+  const hemi = new THREE.HemisphereLight(0x9fb2d0, 0xe0a070, 0.24)
+  scene.add(hemi)
+
+  // 落日主光：方向 = SkyRig 太阳方向（天空太阳/影子/高光三者自洽；时段系统更新）
+  // R9（N2-性能）：阴影按需更新 —— 静态场景官方范式（context7 对照）：
+  //   autoUpdate=false，仅时段切换/相机变更时置 needsUpdate → 平时阴影贴图零重算
+  const sun = new THREE.DirectionalLight(0xffd2a0, 3.6)
+  sun.position.copy(new THREE.Vector3(-100, 42, 80).normalize()).multiplyScalar(160)
   sun.castShadow = true
-  sun.shadow.mapSize.set(4096, 4096)
-  sun.shadow.radius = 4 // 落日柔和长影
+  const shadowSize = quality?.shadowSize ?? 4096
+  sun.shadow.mapSize.set(shadowSize, shadowSize)
+  sun.shadow.radius = 4 // 落日柔和长影（PCFSoft 下依赖 mapSize 尺寸与相机包围盒）
+  sun.shadow.autoUpdate = false
   // v11 阴影相机收紧 ~15%：原 ±150/120/-140 覆盖 300m 摊薄阴影贴图（13.6px/m），
   // 收紧后 ~255m → 纹素密度 +17%（设备区阴影更锐利）。需保留长影方向（+x/-z）
   // 与厂界（±105）余量：left/right 115、top 100、bottom -120
@@ -1205,23 +1227,26 @@ export function buildEnvironment(scene: THREE.Scene, renderer?: THREE.WebGLRende
   scene.add(sun)
 
   // 冷蓝补光（天光反射，提亮背光面与地面阴影区，避免死黑）——只补不填
-  // R3：0.22 → 0.26（配合体积光，暗部略提但保持明暗比）
-  const fill = new THREE.DirectionalLight(0x9db2d8, 0.26)
+  const fill = new THREE.DirectionalLight(0xa9b8d6, 0.32)
   fill.position.set(50, 70, 60)
   scene.add(fill)
 
   // 暖轮廓光（rim，主光反向，勾边分离主体与背景）
-  // R3：0.55 → 0.72（逆光剪影边缘更亮，冷暖对照更鲜明，锚定 "逆光电影光型"）
-  const rim = new THREE.DirectionalLight(0xffb37a, 0.72)
+  const rim = new THREE.DirectionalLight(0xffb37a, 0.8)
   rim.position.set(110, 38, -85)
   scene.add(rim)
 
+  // 月光（N1 夜景档）：默认 0，时段系统按预设点亮；方向 = 太阳反向
+  const moon = new THREE.DirectionalLight(0x9db4e8, 0)
+  moon.position.set(60, 26, -95).normalize().multiplyScalar(-160)
+  scene.add(moon)
+
   // R3 次级阴影：与主太阳同方向的小范围 2048² 影子光，仅覆盖核心装置区（±50m）。
-  // 主太阳 4096² ±115m ≈ 17.8px/m；核心层 2048² ±50m ≈ 41px/m（密度 2.3×）。
-  // 方向严格一致 → 双层阴影完全重合（只是近场边缘更锐），近景塔/反应器落影更密实
+  // 主太阳 ±115m；核心层 ±50m → 纹素密度 2.3×（近景塔/反应器落影更密实）。
+  // R9：弱/中画质档关闭核心阴影（省 2048² 阴影重算）；同样 autoUpdate=false 按需刷新
   const core = new THREE.DirectionalLight(0xffd2a0, 0)
-  core.position.copy(SUN_DIRECTION).multiplyScalar(160)
-  core.castShadow = true
+  core.position.copy(sun.position)
+  core.castShadow = !!quality?.coreShadow
   core.shadow.mapSize.set(2048, 2048)
   core.shadow.radius = 4
   core.shadow.camera.left = -50; core.shadow.camera.right = 50
@@ -1229,12 +1254,12 @@ export function buildEnvironment(scene: THREE.Scene, renderer?: THREE.WebGLRende
   core.shadow.camera.near = 1; core.shadow.camera.far = 260
   core.shadow.bias = -0.0004
   core.shadow.normalBias = 0.02
+  core.shadow.autoUpdate = false
   scene.add(core)
 
   // ── 场景细节（S4） ──
   buildRoadDetails(scene)
   buildFence(scene)
-  buildStreetLights(scene)
   buildTankFarmSafety(scene)
 
   // ── 周边配套建筑（完整厂区） ──
@@ -1272,5 +1297,8 @@ export function buildEnvironment(scene: THREE.Scene, renderer?: THREE.WebGLRende
     dust = buildDustField(scene)
   }
 
-  return { steamPuffs, flame, dust, clouds, cityBeacons }
+  return {
+    steamPuffs, flame, dust, clouds, cityBeacons, rig,
+    lights: { sun, fill, rim, core, moon, hemi, streets: streetLights, streetLampMat },
+  }
 }
