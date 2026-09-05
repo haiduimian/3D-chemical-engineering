@@ -1,8 +1,0 @@
-node_modules
-dist
-.npm-cache
-.deploy-gh-pages
-*.log
-install*.log
-npm-ver.txt
-.shots
