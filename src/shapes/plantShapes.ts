@@ -115,10 +115,12 @@ function handrail(radius: number, mat: THREE.Material, posts = 12, h = 1) {
   return g
 }
 
-/** 巡检灯共享几何体/材质（平台护栏立柱顶暖光小灯，黄昏灯火初上） */
+/** 巡检灯共享几何体/材质（平台护栏立柱顶暖光小灯，黄昏灯火初上）
+ *  v10：1.8 → 1.2 —— 低于 bloom 阈值，护栏小灯不产生光晕（远处成排灯珠
+ *  曾与指示灯一起糊成白色光斑） */
 const patrolLampGeo = new THREE.SphereGeometry(0.07, 8, 6)
 const patrolLampMat = new THREE.MeshStandardMaterial({
-  color: 0xffc37a, emissive: 0xffb066, emissiveIntensity: 1.8, roughness: 0.4,
+  color: 0xffc37a, emissive: 0xffb066, emissiveIntensity: 1.2, roughness: 0.4,
 })
 
 /** 平台护栏巡检灯：每 3 根立柱挂 1 盏（控制数量），挂在立柱顶外侧 */
@@ -211,28 +213,29 @@ function weldRing(r: number, mat: THREE.Material) {
   return ring
 }
 
-/** 铭牌（CanvasTexture 金属铭牌，带设备位号） */
+/** 铭牌（CanvasTexture 金属铭牌，带设备位号）
+ *  R2：画布 256x128 → 512x256，近景可读性提升（对应参考基准"纹素密度一致"） */
 function nameplate(text: string, mat: THREE.Material) {
   const canvas = document.createElement('canvas')
-  canvas.width = 256
-  canvas.height = 128
+  canvas.width = 512
+  canvas.height = 256
   const ctx = canvas.getContext('2d')!
   ctx.fillStyle = '#cfcabe'
-  ctx.fillRect(0, 0, 256, 128)
+  ctx.fillRect(0, 0, 512, 256)
   ctx.strokeStyle = '#555a61'
-  ctx.lineWidth = 6
-  ctx.strokeRect(8, 8, 240, 112)
+  ctx.lineWidth = 12
+  ctx.strokeRect(16, 16, 480, 224)
   ctx.strokeStyle = '#8b8f96'
-  ctx.lineWidth = 2
-  ctx.strokeRect(16, 16, 224, 96)
+  ctx.lineWidth = 4
+  ctx.strokeRect(32, 32, 448, 192)
   ctx.fillStyle = '#20242a'
-  ctx.font = 'bold 58px "Segoe UI", Arial, sans-serif'
+  ctx.font = 'bold 116px "Segoe UI", Arial, sans-serif'
   ctx.textAlign = 'center'
   ctx.textBaseline = 'middle'
-  ctx.fillText(text, 128, 58)
-  ctx.font = '22px "Segoe UI", Arial, sans-serif'
+  ctx.fillText(text, 256, 116)
+  ctx.font = '44px "Segoe UI", Arial, sans-serif'
   ctx.fillStyle = '#4a4f56'
-  ctx.fillText('SMES · CHEMICAL PLANT', 128, 102)
+  ctx.fillText('SMES · CHEMICAL PLANT', 256, 204)
   const tex = new THREE.CanvasTexture(canvas)
   tex.colorSpace = THREE.SRGBColorSpace
   const mesh = new THREE.Mesh(
@@ -883,13 +886,15 @@ export function buildEquipment(def: EquipmentDef): THREE.Group {
   g.userData.elementId = def.id
   g.position.set(def.x, 0, def.z)
   // 接触阴影盘：ShadowMaterial 圆盘贴在设备底部，密实阴影消除"悬浮感"（黄昏长影下加强）
+  // v11：y 0.02 → 0.045 —— 与地面贴花统一悬浮规范（DECAL_Y ≥3cm），
+  // 拉远俯视时避免与地坪顶面（y=0）深度抖动互相闪烁
   const footR = (def.params?.radius ?? 2.5) * 1.9
   const disc = new THREE.Mesh(
     new THREE.CircleGeometry(footR, 36),
     new THREE.ShadowMaterial({ opacity: 0.65 }),
   )
   disc.rotation.x = -Math.PI / 2
-  disc.position.y = 0.02
+  disc.position.y = 0.045
   disc.receiveShadow = true
   g.add(disc)
   // 统一阴影设置：设备投影、平台接受阴影

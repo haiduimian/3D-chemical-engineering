@@ -1,51 +1,15 @@
 import * as THREE from 'three'
 import { concrete, structuralSteel, machinedSteel, paintedSteel } from '../materials/pbr'
+import { buildPhysicalSky, SUN_DIRECTION } from './sky'
 
 /**
- * 装置环境 v8（黄昏/落日工业风 · 完整厂区）
+ * 装置环境 v9（黄昏/落日工业风 · 完整厂区）
+ * v9 变更：物理大气散射天空（Preetham）替代渐变纹理背景；
+ *          IBL 环境直接烘焙自天空（反射与可见天空物理一致）；
+ *          移除假太阳圆盘/假体积光柱（廉价感来源）；雾色对齐天空地平线
  * 光型：低角度暖橙落日主光（长影）+ 冷蓝天光补光 + 反向暖轮廓光(rim)
- * 氛围：暖灰大气雾（大气透视）+ 橙蓝渐变天空 + 植被剪影 + 灯火初上
  * 配套：中控楼/仓库/办公楼/消防站/火炬塔/冷却塔/停车场/背景城区 + 安全标线
  */
-
-/** 黄昏天空渐变背景（顶部冷蓝紫 → 中部暖橙 → 地平线亮橙） */
-function makeSkyGradient(): THREE.Texture {
-  const canvas = document.createElement('canvas')
-  canvas.width = 2
-  canvas.height = 256
-  const ctx = canvas.getContext('2d')!
-  const g = ctx.createLinearGradient(0, 0, 0, 256)
-  g.addColorStop(0, '#2c3a5e')    // 顶部冷蓝紫
-  g.addColorStop(0.42, '#5a5a80') // 过渡灰紫
-  g.addColorStop(0.62, '#c47a4a') // 中部暖橙
-  g.addColorStop(0.85, '#e89a5a') // 低空亮橙
-  g.addColorStop(1, '#f2b274')    // 地平线亮精细橙
-  ctx.fillStyle = g
-  ctx.fillRect(0, 0, 2, 256)
-  const tex = new THREE.CanvasTexture(canvas)
-  tex.colorSpace = THREE.SRGBColorSpace
-  return tex
-}
-
-/**
- * 黄昏 Lightformer 环境反射
- * 光型：西侧大暖橙落日带 + 顶部/东侧冷蓝天光 + 地平线暖反射带 → 金属反射"上冷下暖"
- */
-function buildLightformerScene(): THREE.Scene {
-  const s = new THREE.Scene()
-  const mk = (w: number, h: number, color: number, pos: [number, number, number], lookAt: [number, number, number]) => {
-    const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshBasicMaterial({ color }))
-    m.position.set(pos[0], pos[1], pos[2])
-    m.lookAt(new THREE.Vector3(lookAt[0], lookAt[1], lookAt[2]))
-    s.add(m)
-  }
-  mk(95, 42, 0xff9a4a, [-120, 26, 82], [0, 0, 0])   // 西侧落日渐变主带（暖橙，大而亮）
-  mk(60, 26, 0xffc37a, [-95, 10, 58], [0, 0, 0])    // 地平线亮橙
-  mk(85, 55, 0x5a6c96, [0, 130, 0], [0, 0, 0])      // 顶部冷蓝天光
-  mk(70, 40, 0x46567e, [105, 50, -60], [0, 0, 0])   // 东侧冷蓝补光
-  mk(80, 24, 0xd98a5a, [0, 8, 110], [0, 0, 0])      // 地面暖反射带
-  return s
-}
 
 /** 厂区绿化：黄昏逆光下的暖褐剪影树（树干 + 偏暖树冠） */
 function buildVegetation(scene: THREE.Scene) {
@@ -71,6 +35,42 @@ function buildVegetation(scene: THREE.Scene) {
   mkTree(-71, 8, 0.9)
   mkTree(71, -10, 1.0)
   scene.add(g)
+}
+
+/** 厂界/道路灌木带（R2）：沿围栏内侧与主路两侧的暖剪影低矮灌丛，InstancedMesh 单 DrawCall。
+ *  呼应工业厂区"分区边界绿化"惯例（参考基准：分区界面），黄昏下呈暖褐剪影带 */
+function buildShrubBands(scene: THREE.Scene) {
+  const mat = new THREE.MeshStandardMaterial({ color: 0x453a28, roughness: 0.95 })
+  const geo = new THREE.SphereGeometry(0.7, 8, 6)
+  const m4 = new THREE.Matrix4()
+  const q = new THREE.Quaternion()
+  const s = new THREE.Vector3()
+  const p = new THREE.Vector3()
+  let seed = 997
+  const rnd = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647 }
+  const mtxs: THREE.Matrix4[] = []
+  const push = (x: number, z: number) => {
+    const sc = 0.75 + rnd() * 0.9
+    s.set(1.0 + rnd() * 0.7, sc, 1.0 + rnd() * 0.7)
+    p.set(x, 0.28 * sc, z)
+    mtxs.push(m4.clone().compose(p, q, s))
+  }
+  // 围栏内侧（距栏 4m）北/南/东/西四段
+  for (let x = -98; x <= 98; x += 6.5) { push(x, -61); push(x, 61) }
+  for (let z = -56; z <= 56; z += 6.5) { push(-101, z); push(101, z) }
+  // 主路两侧（避开路口与 u 主路路面留空）
+  for (let x = -105; x <= 105; x += 7.5) { if (Math.abs(x) > 14) { push(x, -53.2); push(x, -42.8) } }
+  for (let z = -58; z <= 58; z += 7.5) { if (Math.abs(z) > 20 && (z < -51.5 || z > -44.5)) { push(-65.8, z); push(65.8, z) } }
+  // 罐区围堰与球罐围堰外缘点缀（间距更松）
+  for (let x = -74; x <= -20; x += 9) push(x, -20.5)
+  for (let z = -48.5; z <= -22; z += 9) push(-68, z)
+  for (let x = 36; x <= 74; x += 9) push(x, -18.5)
+  if (mtxs.length) {
+    const inst = new THREE.InstancedMesh(geo, mat, mtxs.length)
+    mtxs.forEach((mtx, i) => inst.setMatrixAt(i, mtx))
+    inst.instanceMatrix.needsUpdate = true
+    scene.add(inst)
+  }
 }
 
 /** 道路虚线标线纹理（透明底 + 白色虚线段，4m 周期） */
@@ -100,7 +100,7 @@ function buildRoadDetails(scene: THREE.Scene) {
   }))
   ;(dashH.material as THREE.MeshBasicMaterial).map!.repeat.set(54, 1)
   dashH.rotation.x = -Math.PI / 2
-  dashH.position.set(0, 0.055, -48)
+  dashH.position.set(0, DECAL_Y.onRoad, -48)
   g.add(dashH)
 
   // 中央虚线（南北路 x=±70）
@@ -111,7 +111,7 @@ function buildRoadDetails(scene: THREE.Scene) {
     ;(dashV.material as THREE.MeshBasicMaterial).map!.repeat.set(34, 1)
     dashV.rotation.x = -Math.PI / 2
     dashV.rotation.z = Math.PI / 2
-    dashV.position.set(x, 0.055, 0)
+    dashV.position.set(x, DECAL_Y.onRoad, 0)
     g.add(dashV)
   }
 
@@ -120,7 +120,7 @@ function buildRoadDetails(scene: THREE.Scene) {
   for (const z of [-50.6, -45.4]) {
     const e = new THREE.Mesh(edgeGeoH, lineMat)
     e.rotation.x = -Math.PI / 2
-    e.position.set(0, 0.055, z)
+    e.position.set(0, DECAL_Y.onRoad, z)
     g.add(e)
   }
   const edgeGeoV = new THREE.PlaneGeometry(136, 0.12)
@@ -129,7 +129,7 @@ function buildRoadDetails(scene: THREE.Scene) {
       const e = new THREE.Mesh(edgeGeoV, lineMat)
       e.rotation.x = -Math.PI / 2
       e.rotation.z = Math.PI / 2
-      e.position.set(x + dx, 0.055, 0)
+      e.position.set(x + dx, DECAL_Y.onRoad, 0)
       g.add(e)
     }
   }
@@ -156,14 +156,14 @@ function buildRoadDetails(scene: THREE.Scene) {
   const ditchH = new THREE.BoxGeometry(220, 0.06, 0.9)
   for (const z of [-52.2, -43.8]) {
     const d = new THREE.Mesh(ditchH, ditchMat)
-    d.position.set(0, 0.008, z)
+    d.position.set(0, 0.02, z)
     g.add(d)
   }
   const ditchV = new THREE.BoxGeometry(0.9, 0.06, 140)
   for (const x of [-70, 70]) {
     for (const dx of [-4.2, 4.2]) {
       const d = new THREE.Mesh(ditchV, ditchMat)
-      d.position.set(x + dx, 0.008, 0)
+      d.position.set(x + dx, 0.02, 0)
       g.add(d)
     }
   }
@@ -286,7 +286,7 @@ function buildStreetLights(scene: THREE.Scene) {
   const g = new THREE.Group()
   const steel = structuralSteel()
   const lampMat = new THREE.MeshStandardMaterial({
-    color: 0xffc37a, emissive: 0xffb066, emissiveIntensity: 2.4, roughness: 0.4,
+    color: 0xffc37a, emissive: 0xffb066, emissiveIntensity: 6, roughness: 0.4,
   })
   const xs = [-90, -60, -30, 0, 30, 60, 90]
   xs.forEach((x, i) => {
@@ -375,6 +375,24 @@ function buildTankFarmSafety(scene: THREE.Scene) {
     panel.rotation.y = Math.PI
     g.add(panel)
   }
+
+  // R5 灭火器箱（罐区围堰外道路侧，红色箱体 + 顶部灭火器）：安全设施完整性
+  const extMat = paintedSteel(0xb0312a)
+  const mkExtinguisher = (x: number, z: number, ry: number) => {
+    const box = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.8, 0.32), extMat)
+    box.position.set(x, 0.4, z)
+    box.rotation.y = ry
+    g.add(box)
+    const bottle = new THREE.Mesh(new THREE.CylinderGeometry(0.075, 0.09, 0.5, 10), extMat)
+    bottle.position.set(x + Math.sin(ry) * 0.26, 1.05, z + Math.cos(ry) * 0.26)
+    g.add(bottle)
+    const head = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.12, 0.1), new THREE.MeshStandardMaterial({ color: 0x2e6e5e, roughness: 0.5 }))
+    head.position.set(bottle.position.x, 1.35, bottle.position.z)
+    g.add(head)
+  }
+  mkExtinguisher(-64, -21, -0.9)
+  mkExtinguisher(-36, -18.5, -2.4)
+  mkExtinguisher(58, -20.5, 2.2)
   scene.add(g)
 }
 
@@ -396,7 +414,10 @@ function makeBuilding(w: number, h: number, d: number, wallColor: number, litRat
   base.position.y = 0.25
   g.add(base)
   // 窗户带（前后立面，部分亮灯）—— InstancedMesh 合并，亮/暗各 1 个 DrawCall
-  const winLitMat = new THREE.MeshStandardMaterial({ color: 0x2a2f36, emissive: 0xffc37a, emissiveIntensity: 1.4, roughness: 0.4 })
+  // v10 修复"白色光斑方块"：窗光 emissive 必须低于 bloom 阈值 5，否则任何一扇
+  // 正对相机的窗都会糊成白色光团（v9 的 1.4 与 v10 曾调的 3.2 都超阈值）。
+  // 窗光只需"可见的暖光"不需要光晕 → 1.6（低于阈值一半）
+  const winLitMat = new THREE.MeshStandardMaterial({ color: 0x2a2f36, emissive: 0xffc37a, emissiveIntensity: 1.6, roughness: 0.4 })
   const winDarkMat = new THREE.MeshStandardMaterial({ color: 0x232830, roughness: 0.5, metalness: 0.3 })
   const winGeo = new THREE.PlaneGeometry(1.6, 1.4)
   const floors = Math.max(1, Math.floor(h / 3.2))
@@ -516,10 +537,10 @@ function buildFlareStack(scene: THREE.Scene): THREE.Mesh {
   const tip = new THREE.Mesh(new THREE.CylinderGeometry(0.9, 0.5, 2, 12), machinedSteel())
   tip.position.y = 34.5
   g.add(tip)
-  // 火焰（自发光，Bloom 会使其发光）
+  // 火焰（自发光，HDR 亮度 9 —— 远超 bloom 阈值 5，光晕稳定不随抖动穿越阈值）
   const flame = new THREE.Mesh(
     new THREE.ConeGeometry(0.7, 2.4, 10),
-    new THREE.MeshStandardMaterial({ color: 0xff8a3c, emissive: 0xff6a1e, emissiveIntensity: 3, transparent: true, opacity: 0.9 }),
+    new THREE.MeshStandardMaterial({ color: 0xff8a3c, emissive: 0xff6a1e, emissiveIntensity: 9, transparent: true, opacity: 0.9 }),
   )
   flame.position.y = 36.5
   g.add(flame)
@@ -538,14 +559,16 @@ function buildFlareStack(scene: THREE.Scene): THREE.Mesh {
   return flame
 }
 
-/** 火炬火焰闪烁（在渲染循环中调用）：火苗摇曳 + 亮度抖动 */
+/** 火炬火焰闪烁（在渲染循环中调用）：火苗摇曳 + 亮度抖动
+ *  v10 修复"闪烁 bug"：v1 的 9/23 rad/s 高频复合抖动让光晕在 bloom 阈值边缘反复
+ *  穿越 → 火炬持续高频闪烁刺眼。改为低频摇曳（0.33/0.9 Hz），幅度收敛，光晕稳定 */
 export function animateFlare(flame: THREE.Mesh, t: number) {
   const m = flame.material as THREE.MeshStandardMaterial
-  // 亮度高频抖动（模拟燃烧不稳定）
-  m.emissiveIntensity = 2.6 + Math.sin(t * 9) * 0.5 + Math.sin(t * 23) * 0.3
-  // 火苗轻微摇曳（缩放 + 倾斜）
-  flame.scale.set(1 + Math.sin(t * 7) * 0.12, 1 + Math.sin(t * 11) * 0.15, 1 + Math.cos(t * 8) * 0.12)
-  flame.rotation.z = Math.sin(t * 5) * 0.08
+  // 低频呼吸式抖动（模拟燃烧不稳定，但不产生频闪）
+  m.emissiveIntensity = 8.5 + Math.sin(t * 2.1) * 1.1 + Math.sin(t * 5.7) * 0.6
+  // 火苗轻微摇曳（缩放 + 倾斜，低频）
+  flame.scale.set(1 + Math.sin(t * 1.8) * 0.08, 1 + Math.sin(t * 2.6) * 0.1, 1 + Math.cos(t * 2.2) * 0.08)
+  flame.rotation.z = Math.sin(t * 1.3) * 0.07
 }
 
 /** 蒸汽粒子（冷却塔动态水汽，循环上升/膨胀/淡出） */
@@ -577,9 +600,10 @@ function buildCoolingTowers(scene: THREE.Scene): SteamPuff[] {
     tower.castShadow = true
     scene.add(tower)
     // 每塔 5 颗蒸汽粒子，相位错开形成连续汽柱
+    // R6：颜色 0xe8ecf0→0xded8cd（暖灰白，不再"刺眼白"）
     for (let i = 0; i < 5; i++) {
       const puffMat = new THREE.MeshStandardMaterial({
-        color: 0xe8ecf0, transparent: true, opacity: 0, roughness: 1, depthWrite: false,
+        color: 0xded8cd, transparent: true, opacity: 0, roughness: 1, depthWrite: false,
       })
       const puff = new THREE.Mesh(puffGeo, puffMat)
       puff.position.set(x, 14, z)
@@ -593,16 +617,17 @@ function buildCoolingTowers(scene: THREE.Scene): SteamPuff[] {
   return puffs
 }
 
-/** 驱动蒸汽粒子动画（在渲染循环中调用）：上升→膨胀→淡出→循环 */
+/** 驱动蒸汽粒子动画（在渲染循环中调用）：上升→膨胀→淡出→循环
+ *  R6：峰值透明度 0.4→0.24、膨胀上限 3.2→2.6 —— 柔和汽柱，不刺眼 */
 export function animateSteam(puffs: SteamPuff[], t: number) {
   for (const p of puffs) {
     // 相位推进（0~1 循环）
     const u = (p.phase + t * p.speed * 0.12) % 1
     // 上升高度：塔顶 14 → 上方 12 米
     const rise = u * 12
-    // 膨胀：随上升变大（1 → 3.2 倍）
-    const scale = 1 + u * 2.2
-    // 透明度：升起时淡入，到顶淡出（峰值 0.4）
+    // 膨胀：随上升变大（1 → 2.6 倍）
+    const scale = 1 + u * 1.6
+    // 透明度：升起时淡入，到顶淡出（峰值 0.24）
     const alpha = u < 0.15 ? u / 0.15 : u > 0.7 ? (1 - u) / 0.3 : 1
     p.mesh.position.set(
       p.baseX + Math.sin(t * 0.6 + p.phase * 6.28) * p.drift * u,
@@ -610,7 +635,7 @@ export function animateSteam(puffs: SteamPuff[], t: number) {
       p.baseZ + Math.cos(t * 0.5 + p.phase * 6.28) * p.drift * u * 0.6,
     )
     p.mesh.scale.setScalar(scale)
-    ;(p.mesh.material as THREE.MeshStandardMaterial).opacity = alpha * 0.4
+    ;(p.mesh.material as THREE.MeshStandardMaterial).opacity = alpha * 0.24
   }
 }
 
@@ -625,7 +650,7 @@ function buildParkingLot(scene: THREE.Scene) {
   for (let i = 0; i <= 8; i++) {
     const line = new THREE.Mesh(new THREE.PlaneGeometry(0.12, 5), lineMat)
     line.rotation.x = -Math.PI / 2
-    line.position.set(30 - 11 + i * 2.75, 0.07, 58)
+    line.position.set(30 - 11 + i * 2.75, DECAL_Y.onPad, 58)
     g.add(line)
   }
   // 车辆（简化体块）
@@ -655,7 +680,7 @@ function buildBackgroundCity(scene: THREE.Scene): THREE.Mesh[] {
     c => new THREE.MeshStandardMaterial({ color: c, roughness: 0.9 }),
   )
   const roofMat = new THREE.MeshStandardMaterial({ color: 0x3a3f45, roughness: 0.92 })
-  const winLitMat = new THREE.MeshStandardMaterial({ color: 0x2a2f36, emissive: 0xffb066, emissiveIntensity: 0.8, roughness: 0.5 })
+  const winLitMat = new THREE.MeshStandardMaterial({ color: 0x2a2f36, emissive: 0xffb066, emissiveIntensity: 1.2, roughness: 0.5 })
 
   // 收集所有亮窗矩阵，最后合并为单个 InstancedMesh（1 个 DrawCall）
   const winMtx: THREE.Matrix4[] = []
@@ -703,7 +728,7 @@ function buildBackgroundCity(scene: THREE.Scene): THREE.Mesh[] {
     g.add(tower)
     const beacon = new THREE.Mesh(
       new THREE.SphereGeometry(0.5, 10, 8),
-      new THREE.MeshStandardMaterial({ color: 0xff3333, emissive: 0xff3333, emissiveIntensity: 2, roughness: 0.3 }),
+      new THREE.MeshStandardMaterial({ color: 0xff3333, emissive: 0xff3333, emissiveIntensity: 5, roughness: 0.3 }),
     )
     beacon.position.set(dx, h + 1, dz)
     g.add(beacon)
@@ -777,14 +802,14 @@ function buildGroundJoints(scene: THREE.Scene) {
   for (let x = -100; x <= 100; x += 10) {
     const line = new THREE.Mesh(new THREE.PlaneGeometry(0.15, 138), jointMat)
     line.rotation.x = -Math.PI / 2
-    line.position.set(x, 0.012, 0)
+    line.position.set(x, DECAL_Y.onConcrete, 0)
     g.add(line)
   }
   // 纵向缝（沿 z 方向，间距 10m，覆盖 -65~65）
   for (let z = -60; z <= 60; z += 10) {
     const line = new THREE.Mesh(new THREE.PlaneGeometry(218, 0.15), jointMat)
     line.rotation.x = -Math.PI / 2
-    line.position.set(0, 0.012, z)
+    line.position.set(0, DECAL_Y.onConcrete, z)
     g.add(line)
   }
   scene.add(g)
@@ -799,6 +824,15 @@ function buildHorizonHaze(scene: THREE.Scene) {
   haze.rotation.x = -Math.PI / 2
   haze.position.set(0, 1.5, -260)
   scene.add(haze)
+  // R4 太阳方位侧暖光带：位于相机朝向侧（+z，设备群之后的可见地平线），
+  // 沿太阳方位（-x）偏移中心，含量收敛 —— 天际线亮度梯度有"夕照指向性"
+  const sunBandMat = new THREE.MeshBasicMaterial({
+    color: 0xffb066, transparent: true, opacity: 0.16, fog: false, depthWrite: false,
+  })
+  const band = new THREE.Mesh(new THREE.PlaneGeometry(760, 46), sunBandMat)
+  band.rotation.x = -Math.PI / 2
+  band.position.set(-35, 1.8, 262)
+  scene.add(band)
 }
 
 /** 安全黄色标线：设备警戒区方框 + 斑马线 + 道路导向箭头（化工厂标志性安全视觉） */
@@ -812,7 +846,7 @@ function buildSafetyMarkings(scene: THREE.Scene) {
     const mkBar = (bw: number, bd: number, x: number, z: number) => {
       const bar = new THREE.Mesh(new THREE.PlaneGeometry(bw, bd), yellow)
       bar.rotation.x = -Math.PI / 2
-      bar.position.set(x, 0.06, z)
+      bar.position.set(x, DECAL_Y.onConcrete, z)
       g.add(bar)
     }
     mkBar(w, t, cx, cz - d / 2) // 前
@@ -830,7 +864,7 @@ function buildSafetyMarkings(scene: THREE.Scene) {
   for (let i = 0; i < 6; i++) {
     const stripe = new THREE.Mesh(new THREE.PlaneGeometry(0.8, 4.5), white)
     stripe.rotation.x = -Math.PI / 2
-    stripe.position.set(-70 - 2.6 + i * 1.1, 0.06, -48)
+    stripe.position.set(-70 - 2.6 + i * 1.1, DECAL_Y.onRoad, -48)
     g.add(stripe)
   }
 
@@ -848,7 +882,7 @@ function buildSafetyMarkings(scene: THREE.Scene) {
     const arrow = new THREE.Mesh(new THREE.ShapeGeometry(shape), yellow)
     arrow.rotation.x = -Math.PI / 2
     arrow.rotation.z = rotY
-    arrow.position.set(x, 0.06, z)
+    arrow.position.set(x, DECAL_Y.onConcrete, z)
     g.add(arrow)
   }
   mkArrow(-20, -48, 0)
@@ -880,32 +914,45 @@ export function buildWarningLights(scene: THREE.Scene): THREE.Mesh[] {
   return lights
 }
 
-/** 体积夕阳光柱（丁达尔效应）：沿太阳方向的加法混合半透明长平面，弱机不开 */
-function buildSunShafts(scene: THREE.Scene) {
-  // 光传播方向：太阳 (-100,55,85) → 厂区原点
-  const lightDir = new THREE.Vector3(100, -55, -85).normalize()
-  let seed = 99
-  const rnd = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647 }
-  for (let i = 0; i < 7; i++) {
-    const mat = new THREE.MeshBasicMaterial({
-      color: 0xffb066, transparent: true, opacity: 0.035 + rnd() * 0.035,
-      blending: THREE.AdditiveBlending, depthWrite: false, fog: false, side: THREE.DoubleSide,
-    })
-    const w = 2.5 + rnd() * 5
-    const len = 85 + rnd() * 30
-    const shaft = new THREE.Mesh(new THREE.PlaneGeometry(w, len), mat)
-    // 平面长边对齐光向 + 绕光向随机滚转（每条光柱截面朝向不同）
-    shaft.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), lightDir)
-    shaft.rotateY(rnd() * Math.PI)
-    // 分布：自西侧（落日侧）斜穿厂区上空
-    shaft.position.set(-46 + rnd() * 60, 26 + rnd() * 14, -30 + rnd() * 55)
-    scene.add(shaft)
-  }
+// ── 地面贴花高度规范（v10 修复 z-fighting 闪烁）──
+// 相机 near=0.5/far=1500 时，200m 外深度分辨率 ~0.7cm；贴花悬浮高度必须 ≥3cm
+// 才能保证拉远视角（~300m）下不出现深度抖动闪烁。所有地面贴花统一从此取高度。
+export const DECAL_Y = {
+  onConcrete: 0.035,  // 地坪上的贴花（油渍/伸缩缝/警戒线/箭头）
+  onRoad: 0.075,      // 路面上的标线（路面顶 0.045 + 3cm）
+  onPad: 0.09,        // 停车场位线（pad 顶 0.06 + 3cm）
+} as const
+
+/** 体积夕阳光柱已移除：原"加法混合半透明长平面"是屏幕空间假象，
+ *  与物理天空亮度不一致、无深度遮挡、边缘生硬（基线截图中白色斜条）。
+ *  后续迭代可用 raymarch 体积光或 Postprocessing GodRays 替代 */
+
+/** 尘埃软点纹理（径向渐变 → 柔圆光斑）。
+ *  R6 闪烁修复：原方形点精灵（PointsMaterial 无贴图）在亚像素尺度漂移时
+ *  硬边跳像素 → 屏幕上"刺眼白点持续闪烁"（射线反投影实测命中该 Points）。
+ *  柔圆纹理 + 降低 opacity + 收敛漂移 → 变成低噪"浮尘光斑"，不再闪 */
+function dustSpriteTexture(): THREE.CanvasTexture {
+  const key = 'dustSprite'
+  const canvas = document.createElement('canvas')
+  canvas.width = 64
+  canvas.height = 64
+  const ctx = canvas.getContext('2d')!
+  const g = ctx.createRadialGradient(32, 32, 0, 32, 32, 32)
+  g.addColorStop(0, 'rgba(255,255,255,1)')
+  g.addColorStop(0.4, 'rgba(255,255,255,0.55)')
+  g.addColorStop(1, 'rgba(255,255,255,0)')
+  ctx.fillStyle = g
+  ctx.fillRect(0, 0, 64, 64)
+  const tex = new THREE.CanvasTexture(canvas)
+  return tex
 }
 
-/** 尘埃粒子场（承接夕阳光柱的浮尘，缓慢漂移） */
+/** 尘埃粒子场（承接夕阳光柱的浮尘，缓慢漂移）
+ *  R6：count 160→120、size 0.16→0.34、opacity 0.45→0.3、
+ *  色相 0xffd9a0→0xecc99a（暖金尘，不再"刺眼白"）+ 柔圆光斑贴图 */
+let dustSpriteCache: THREE.CanvasTexture | null = null
 function buildDustField(scene: THREE.Scene): THREE.Points {
-  const N = 160
+  const N = 120
   const pos = new Float32Array(N * 3)
   let seed = 1234
   const rnd = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647 }
@@ -916,8 +963,10 @@ function buildDustField(scene: THREE.Scene): THREE.Points {
   }
   const geo = new THREE.BufferGeometry()
   geo.setAttribute('position', new THREE.BufferAttribute(pos, 3))
+  if (!dustSpriteCache) dustSpriteCache = dustSpriteTexture()
   const mat = new THREE.PointsMaterial({
-    color: 0xffd9a0, size: 0.16, transparent: true, opacity: 0.45,
+    color: 0xecc99a, size: 0.34, transparent: true, opacity: 0.3,
+    map: dustSpriteCache, alphaTest: 0.02,
     sizeAttenuation: true, depthWrite: false,
   })
   const pts = new THREE.Points(geo, mat)
@@ -925,11 +974,12 @@ function buildDustField(scene: THREE.Scene): THREE.Points {
   return pts
 }
 
-/** 驱动尘埃漂移（渲染循环调用）：整体缓慢摆动 + 起伏 */
+/** 驱动尘埃漂移（渲染循环调用）：整体缓慢摆动 + 起伏
+ *  R6：摆幅收敛（闪烁修复：位移幅度与亚像素抖动正相关） */
 export function animateDust(dust: THREE.Points, t: number) {
-  dust.rotation.y = Math.sin(t * 0.05) * 0.06
-  dust.position.y = Math.sin(t * 0.25) * 0.5
-  dust.position.x = Math.sin(t * 0.08) * 1.2
+  dust.rotation.y = Math.sin(t * 0.05) * 0.03
+  dust.position.y = Math.sin(t * 0.25) * 0.3
+  dust.position.x = Math.sin(t * 0.08) * 0.6
 }
 
 /** 地面油渍贴花纹理（不规则径向渐变暗斑，边缘透明） */
@@ -975,44 +1025,39 @@ function buildGroundStains(scene: THREE.Scene) {
       stain.rotation.x = -Math.PI / 2
       stain.rotation.z = rnd() * Math.PI * 2
       stain.scale.setScalar(s)
-      stain.position.set(hx + (rnd() - 0.5) * 9, 0.016, hz + (rnd() - 0.5) * 9)
+      stain.position.set(hx + (rnd() - 0.5) * 9, DECAL_Y.onConcrete, hz + (rnd() - 0.5) * 9)
       scene.add(stain)
     }
   }
 }
 
-/** 落日光晕（太阳圆盘 + 光晕，位于主光方向） */
-function buildSunGlow(scene: THREE.Scene) {
-  // 太阳圆盘（自发光，Bloom 使其发光）
-  const sunDisc = new THREE.Mesh(
-    new THREE.CircleGeometry(14, 32),
-    new THREE.MeshBasicMaterial({ color: 0xffd9a0, fog: false }),
-  )
-  sunDisc.position.set(-280, 150, 240)
-  sunDisc.lookAt(0, 0, 0)
-  scene.add(sunDisc)
-  // 光晕（半透明大圆）
-  const glow = new THREE.Mesh(
-    new THREE.CircleGeometry(40, 32),
-    new THREE.MeshBasicMaterial({ color: 0xffb066, transparent: true, opacity: 0.25, fog: false }),
-  )
-  glow.position.set(-280, 150, 240)
-  glow.lookAt(0, 0, 0)
-  scene.add(glow)
-}
+/** 落日光晕已由物理天空渲染（Preetham 米氏散射自带太阳圆盘与光晕），假圆盘移除 */
 
-/** 云层（黄昏暖色云带，半透明，收集入云组供漂移） */
+/** 云层（R3：双层——暖亮云带 + 深灰暗云，黄昏天空纵深） */
 function buildClouds(scene: THREE.Scene): THREE.Group {
   const cloudGroup = new THREE.Group()
-  const cloudMat = new THREE.MeshBasicMaterial({ color: 0xf0b27a, transparent: true, opacity: 0.18, fog: false })
+  // A 层：夕照暖云（亮）
+  const cloudMatA = new THREE.MeshBasicMaterial({ color: 0xf0b27a, transparent: true, opacity: 0.16, fog: false })
+  // B 层：深灰暗云（对比层，压出云隙亮边）
+  const cloudMatB = new THREE.MeshBasicMaterial({ color: 0x544e4a, transparent: true, opacity: 0.13, fog: false })
   let seed = 7
   const rnd = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647 }
   for (let i = 0; i < 8; i++) {
     const w = 40 + rnd() * 60
-    const cloud = new THREE.Mesh(new THREE.PlaneGeometry(w, 8 + rnd() * 6), cloudMat)
+    const cloud = new THREE.Mesh(new THREE.PlaneGeometry(w, 8 + rnd() * 6), cloudMatA)
     const angle = rnd() * Math.PI * 2
     const dist = 200 + rnd() * 120
     cloud.position.set(Math.cos(angle) * dist, 90 + rnd() * 50, Math.sin(angle) * dist)
+    cloud.lookAt(0, 60, 0)
+    cloudGroup.add(cloud)
+  }
+  // B 层暗云（数量少、更散、偏高，缓慢对照）
+  for (let i = 0; i < 5; i++) {
+    const w = 50 + rnd() * 70
+    const cloud = new THREE.Mesh(new THREE.PlaneGeometry(w, 10 + rnd() * 8), cloudMatB)
+    const angle = rnd() * Math.PI * 2
+    const dist = 230 + rnd() * 110
+    cloud.position.set(Math.cos(angle) * dist, 110 + rnd() * 45, Math.sin(angle) * dist)
     cloud.lookAt(0, 60, 0)
     cloudGroup.add(cloud)
   }
@@ -1026,31 +1071,29 @@ export function animateClouds(clouds: THREE.Group, t: number) {
   clouds.position.y = Math.sin(t * 0.1) * 1.2
 }
 
-/** 驱动地标高楼航空灯闪烁（渲染循环调用）：相位错开的红色呼吸 */
+/** 驱动地标高楼航空灯闪烁（渲染循环调用）：相位错开的红色呼吸
+ *  v11 闪烁修复：v10 的 2.8~6.4 横跳 bloom 阈值 5 → 光晕忽大忽小（截帧定位的
+ *  屏幕左/右侧高频闪烁块）。改为 5.4~7.2 全程高于阈值 → 光晕常驻平滑呼吸 */
 export function animateCityBeacons(beacons: THREE.Mesh[], t: number) {
   for (let i = 0; i < beacons.length; i++) {
     const m = beacons[i].material as THREE.MeshStandardMaterial
-    m.emissiveIntensity = 0.4 + 2.4 * Math.max(0, Math.sin(t * 1.8 + i * 2.6))
+    m.emissiveIntensity = 5.4 + 1.8 * Math.max(0, Math.sin(t * 1.1 + i * 2.6))
   }
 }
 
 /**
- * 装置环境 v8 入口：黄昏照明 + 渐变天空 + 大气雾 + 地坪/道路/围堰/管廊
+ * 装置环境 v9 入口：物理天空 + 黄昏照明 + 大气雾 + 地坪/道路/围堰/管廊
  * + 道路细节/厂界围栏/路灯/罐区安全设施 + 剪影绿化
  * + 周边配套：中控楼/仓库/变电所/门卫/火炬塔/冷却塔/停车场/背景城区
- * + 行政办公/食堂/消防站/连接道路 + 落日光晕/云层
+ * + 行政办公/食堂/消防站/连接道路 + 云层
  */
 export function buildEnvironment(scene: THREE.Scene, renderer?: THREE.WebGLRenderer, weak = false): { steamPuffs: SteamPuff[], flame: THREE.Mesh, dust: THREE.Points | null, clouds: THREE.Group, cityBeacons: THREE.Mesh[] } {
-  // ── 环境反射（黄昏光型：西暖东冷 + 地平线暖反射） ──
-  if (renderer) {
-    const pmrem = new THREE.PMREMGenerator(renderer)
-    scene.environment = pmrem.fromScene(buildLightformerScene(), 0.04).texture
-    pmrem.dispose()
-  }
+  // ── 物理天空 + IBL（环境反射直接烘焙自天空，与可见背景物理一致） ──
+  if (renderer) buildPhysicalSky(scene, renderer)
 
-  // ── 背景：黄昏渐变 + 暖灰大气雾（大气透视，远景减饱和淡出；起点推远避免拉远发糊） ──
-  scene.background = makeSkyGradient()
-  scene.fog = new THREE.Fog(0xf0b27a, 260, 640)
+  // ── 大气雾：色相对齐物理天空地平线均值（暖灰橙），弱化"远景染色"强度 ──
+  // v10：near/far 前移 —— 雾需可感知才有纵深（v9 的 300/950 几乎不可见）
+  scene.fog = new THREE.Fog(0xb5886a, 160, 780)
 
   // ── 外部大地面（厂区外土地，承接背景城区，避免地平线穿帮） ──
   const outerGround = new THREE.Mesh(
@@ -1121,38 +1164,72 @@ export function buildEnvironment(scene: THREE.Scene, renderer?: THREE.WebGLRende
         rack.add(cross)
       }
     }
+    // R5 电缆桥架：顶层横梁上方两侧各一条纵向电缆槽 + 每 8m 一道托架横撑
+    // （工艺厂管廊"密而不乱"的标准细节：桥架与工艺管线分层敷设）
+    const tray = new THREE.Mesh(new THREE.BoxGeometry(x1 - x0, 0.06, 0.5), structuralSteel())
+    tray.position.set((x0 + x1) / 2, 7.85, z - 1.55)
+    rack.add(tray)
+    const tray2 = tray.clone(); tray2.position.z = z + 1.55
+    rack.add(tray2)
+    const bracket = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.5, 4.4), structuralSteel())
+    for (let i = 0; i <= bays - 1; i++) {
+      const b = bracket.clone()
+      b.position.set(x0 + (i + 0.5) * 8, 7.6, z)
+      rack.add(b)
+    }
   }
   mkRack(-6, -60, 30)   // 主管廊（罐区↔反应区）
   mkRack(28, 15, 45)    // 塔区↔球罐支廊
   scene.add(rack)
 
-  // ── 黄昏照明（落日主光 + 冷蓝天光 + 暖轮廓光） ──
-  // 半球光：冷蓝天光 + 暖橙地面反射（强度充足，保证地面基础亮度）
-  scene.add(new THREE.HemisphereLight(0x8fa2c8, 0xe0a070, 0.85))
+  // ── 黄昏照明（与物理天空太阳方向严格对齐）──
+  // v10 光比重构：核心是"恢复明暗比"。v9 直射 4.6 + 补光 0.7 + IBL 0.55 把暗部填满，
+  // 全画面灰白无对比（= 劣质感蒙板）；现在压补光、保直射，让阴影沉下去。
+  // IBL（scene.environment）已提供基础天光漫反射，半球光只做低强度方向性补正
+  scene.add(new THREE.HemisphereLight(0x8fa2c8, 0xe0a070, 0.18))
 
-  // 落日主光（低角度暖橙 → 长投影）
-  const sun = new THREE.DirectionalLight(0xffcf9a, 3.4)
-  sun.position.set(-100, 55, 85)
+  // 落日主光：方向 = SUN_DIRECTION（天空太阳/影子/高光三者自洽）
+  const sun = new THREE.DirectionalLight(0xffd2a0, 3.4)
+  sun.position.copy(SUN_DIRECTION).multiplyScalar(160)
   sun.castShadow = true
   sun.shadow.mapSize.set(4096, 4096)
   sun.shadow.radius = 4 // 落日柔和长影
-  // 阴影相机扩大：覆盖全厂 + 长影延伸方向（+x/-z）
-  sun.shadow.camera.left = -150; sun.shadow.camera.right = 150
-  sun.shadow.camera.top = 120; sun.shadow.camera.bottom = -140
+  // v11 阴影相机收紧 ~15%：原 ±150/120/-140 覆盖 300m 摊薄阴影贴图（13.6px/m），
+  // 收紧后 ~255m → 纹素密度 +17%（设备区阴影更锐利）。需保留长影方向（+x/-z）
+  // 与厂界（±105）余量：left/right 115、top 100、bottom -120
+  sun.shadow.camera.left = -115; sun.shadow.camera.right = 115
+  sun.shadow.camera.top = 100; sun.shadow.camera.bottom = -120
   sun.shadow.camera.far = 500
   sun.shadow.bias = -0.0005
   sun.shadow.normalBias = 0.02 // 低角度光防自遮挡痤疮
   scene.add(sun)
 
-  // 冷蓝补光（天光反射，提亮背光面与地面阴影区，避免死黑）
-  const fill = new THREE.DirectionalLight(0x9db2d8, 0.7)
+  // 冷蓝补光（天光反射，提亮背光面与地面阴影区，避免死黑）——只补不填
+  // R3：0.22 → 0.26（配合体积光，暗部略提但保持明暗比）
+  const fill = new THREE.DirectionalLight(0x9db2d8, 0.26)
   fill.position.set(50, 70, 60)
   scene.add(fill)
 
   // 暖轮廓光（rim，主光反向，勾边分离主体与背景）
-  const rim = new THREE.DirectionalLight(0xffb37a, 0.7)
+  // R3：0.55 → 0.72（逆光剪影边缘更亮，冷暖对照更鲜明，锚定 "逆光电影光型"）
+  const rim = new THREE.DirectionalLight(0xffb37a, 0.72)
   rim.position.set(110, 38, -85)
   scene.add(rim)
+
+  // R3 次级阴影：与主太阳同方向的小范围 2048² 影子光，仅覆盖核心装置区（±50m）。
+  // 主太阳 4096² ±115m ≈ 17.8px/m；核心层 2048² ±50m ≈ 41px/m（密度 2.3×）。
+  // 方向严格一致 → 双层阴影完全重合（只是近场边缘更锐），近景塔/反应器落影更密实
+  const core = new THREE.DirectionalLight(0xffd2a0, 0)
+  core.position.copy(SUN_DIRECTION).multiplyScalar(160)
+  core.castShadow = true
+  core.shadow.mapSize.set(2048, 2048)
+  core.shadow.radius = 4
+  core.shadow.camera.left = -50; core.shadow.camera.right = 50
+  core.shadow.camera.top = 50; core.shadow.camera.bottom = -50
+  core.shadow.camera.near = 1; core.shadow.camera.far = 260
+  core.shadow.bias = -0.0004
+  core.shadow.normalBias = 0.02
+  scene.add(core)
 
   // ── 场景细节（S4） ──
   buildRoadDetails(scene)
@@ -1177,21 +1254,21 @@ export function buildEnvironment(scene: THREE.Scene, renderer?: THREE.WebGLRende
   // ── 安全标线（黄色警戒区/斑马线/导向箭头） ──
   buildSafetyMarkings(scene)
 
-  // ── 天空氛围 ──
-  buildSunGlow(scene)
+  // ── 天空氛围（太阳圆盘/光晕已由物理天空承担） ──
   const clouds = buildClouds(scene)
   buildHorizonHaze(scene)
 
   // ── 厂区绿化（黄昏剪影） ──
   buildVegetation(scene)
+  // R2 厂界/道路灌木带（分区界面 + 地面过渡）
+  buildShrubBands(scene)
 
   // ── 地面油渍贴花（作业区使用痕迹） ──
   buildGroundStains(scene)
 
-  // ── 体积氛围（弱机自动关闭）：夕阳光柱 + 浮尘 ──
+  // ── 体积氛围（弱机自动关闭）：假光柱已移除，仅保留浮尘（承接天空光晕仍有氛围价值） ──
   let dust: THREE.Points | null = null
   if (!weak) {
-    buildSunShafts(scene)
     dust = buildDustField(scene)
   }
 

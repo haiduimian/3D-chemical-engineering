@@ -240,8 +240,15 @@ export function buildPipe(def: PipeDef): BuiltPipe {
   const gaugeNeedle = addLocalInstruments(group, curve, def)
 
   // 流向箭头（锥体 + 切线方向）
+  // R4 去卡通化：MeshBasicMaterial → MeshStandardMaterial（低自发光，
+  // 受光照着色；emissiveIntensity 0.35 << bloom 阈值 5.0，无光晕无闪烁）
   const arrows: THREE.Mesh[] = []
-  const arrowMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(color).lerp(new THREE.Color(0xffffff), 0.5) })
+  const arrowMat = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(color).lerp(new THREE.Color(0xffffff), 0.25),
+    emissive: new THREE.Color(color).lerp(new THREE.Color(0xffffff), 0.35),
+    emissiveIntensity: 0.35,
+    roughness: 0.5, metalness: 0.2,
+  })
   const arrowCount = Math.max(2, Math.floor(curve.getLength() / 5))
   const sign = def.flow < 0 ? -1 : 1
   for (let i = 0; i < arrowCount; i++) {
@@ -265,9 +272,15 @@ export function buildPipe(def: PipeDef): BuiltPipe {
   }
 
   // 批次物料团（沿切线拉伸的"胶囊段"，模拟批次物料移动，方向随 flow 符号）
+  // R4 去卡通化：同箭头处理（Standard + 低自发光 0.4）
   const pulses: THREE.Mesh[] = []
   const pulseCount = Math.max(3, Math.floor(curve.getLength() / 12))
-  const pulseMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(color).lerp(new THREE.Color(0xffffff), 0.55) })
+  const pulseMat = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(color).lerp(new THREE.Color(0xffffff), 0.2),
+    emissive: new THREE.Color(color).lerp(new THREE.Color(0xffffff), 0.3),
+    emissiveIntensity: 0.4,
+    roughness: 0.55, metalness: 0.1,
+  })
   for (let i = 0; i < pulseCount; i++) {
     const p = new THREE.Mesh(new THREE.SphereGeometry(def.diameter * 0.62, 10, 8), pulseMat)
     group.add(p)

@@ -84,13 +84,17 @@ export class MockDataSource {
     }
 
     // 设备状态：泵三态（小概率切换）+ 阀门开度（缓慢漂移）
+    // v10 修复"闪烁 bug"：v1 每泵每秒 1.5% 故障概率 → 5 台泵平均 ~13s 就有一台
+    // 开始红闪，画面上总在随机位置闪红灯（像 bug 而非工况）。
+    // 降为 0.3%（平均 ~5.5 分钟一台），FAULT 恢复概率提高，常态画面稳定、
+    // 演示时偶发故障仍有教学价值
     const states: Record<string, DeviceState> = {}
     for (const id of PUMP_IDS) {
       const prev = this.prevStates[id]?.status ?? 'RUN'
       let status = prev
       const roll = Math.random()
-      if (prev === 'RUN' && roll < 0.015) status = 'FAULT'
-      else if (prev === 'FAULT' && roll < 0.25) status = 'RUN'
+      if (prev === 'RUN' && roll < 0.003) status = 'FAULT'
+      else if (prev === 'FAULT' && roll < 0.5) status = 'RUN'
       else if (prev === 'FAULT') status = 'STOP'
       states[id] = { status, valveOpen: 55 + Math.random() * 40 }
     }

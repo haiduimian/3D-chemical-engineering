@@ -6,16 +6,18 @@ import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPa
 import { SSAOPass } from 'three/examples/jsm/postprocessing/SSAOPass.js'
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js'
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js'
-import { EQUIPMENTS, PIPES, type EquipmentDef } from '../layout/plantLayout'
+import { EQUIPMENTS, PIPES, CAMERA_TOURS, type EquipmentDef } from '../layout/plantLayout'
 import { PORTS } from '../layout/ports'
 import { buildEquipment } from '../shapes/plantShapes'
 import { buildPipe, animatePipes, animateGauges, setPipeHighlight, setPipeHeat, resetPipeHeat, type BuiltPipe } from '../connectors/pipes'
 import { pipeMidpoint } from '../connectors/path'
 import { buildEnvironment, buildWarningLights, animateSteam, animateFlare, animateDust, animateClouds, animateCityBeacons, type SteamPuff } from '../env/environment'
+import { SUN_DIRECTION } from '../env/sky'
 import { MockDataSource, TAG_MAP, norm, type TickCallback, type DeviceState } from '../data/processData'
 import { LeakEffect, FireEffect, buildHazardZones } from '../effects/safety'
 import { FirstPerson, PATROL_POINTS } from '../navigation/firstPerson'
 import { PIPE_COLORS } from '../materials/pbr'
+import { assertEmissionInvariants } from './emissionInvariants'
 
 /**
  * PlantScene —— 3D 化工厂场景编排 v6（黄昏工业风质感）
@@ -24,13 +26,16 @@ import { PIPE_COLORS } from '../materials/pbr'
  * 渲染：接管 Diagram 自带渲染循环，走 EffectComposer（SSAO + Bloom + 青橙分级 + ACES 输出）
  */
 
-/** 青橙色彩分级（teal & orange）：暗部偏冷青、高光偏暖橙，统一画面调性 */
+/** 青橙分级 v2（teal & orange）：亮度保持式 split-toning。
+ *  v1 缺陷：直接乘 tint 系数（×2.2）改变画面能量，暗部大面积偏青发脏；
+ *  v2 先按 tint 归一化亮度再混合 → 只移色相不偷能量，黄昏暖调不被破坏 */
 const tealOrangeShader = {
   uniforms: {
     tDiffuse: { value: null as THREE.Texture | null },
-    shadowTint: { value: new THREE.Color(0x2a4a5e) },
-    highlightTint: { value: new THREE.Color(0xffb066) },
-    amount: { value: 0.28 },
+    // tint 已按亮度归一化（JS 侧计算）：暗部冷青、高光暖橙
+    shadowTint: { value: normalizedTint(0x4a6a80) },
+    highlightTint: { value: normalizedTint(0xffc890) },
+    amount: { value: 0.22 },
   },
   vertexShader: /* glsl */`
     varying vec2 vUv;
@@ -50,10 +55,108 @@ const tealOrangeShader = {
       float lum = dot(c.rgb, vec3(0.299, 0.587, 0.114));
       float shadowW = smoothstep(0.5, 0.0, lum);
       float highW = smoothstep(0.5, 1.0, lum);
-      vec3 graded = c.rgb;
-      graded = mix(graded, c.rgb * shadowTint * 2.2, shadowW * amount);
-      graded = mix(graded, c.rgb * highlightTint * 1.35, highW * amount * 0.8);
+      // 亮度保持：tint 归一化后 × 当前亮度 → 混合前后能量一致
+      vec3 graded = mix(c.rgb, lum * shadowTint, shadowW * amount);
+      graded = mix(graded, lum * highlightTint, highW * amount);
       gl_FragColor = vec4(graded, c.a);
+    }
+  `,
+}
+
+/** 将颜色按亮度归一化为单位亮度 tint（亮度保持分级的关键） */
+function normalizedTint(hex: number): THREE.Color {
+  const c = new THREE.Color(hex)
+  const lum = 0.299 * c.r + 0.587 * c.g + 0.114 * c.b
+  return c.multiplyScalar(1 / Math.max(lum, 0.001))
+}
+
+/** Glsl 风格 smoothstep（JS 侧，报警灯斜坡用） */
+function smoothstep(edge0: number, edge1: number, x: number): number {
+  const t = Math.min(1, Math.max(0, (x - edge0) / (edge1 - edge0)))
+  return t * t * (3 - 2 * t)
+}
+
+/** 微晕影（vignette v1）：画面四角轻微压暗，把视线收拢到主体设备群，
+ *  并压住角落高亮（天空/远景）对构图的干扰。0.25 强度：有层次感但不"暗角病" */
+const vignetteShader = {
+  uniforms: {
+    tDiffuse: { value: null as THREE.Texture | null },
+    intensity: { value: 0.28 },
+    radius: { value: 0.72 },
+  },
+  vertexShader: /* glsl */`
+    varying vec2 vUv;
+    void main() {
+      vUv = uv;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  `,
+  fragmentShader: /* glsl */`
+    uniform sampler2D tDiffuse;
+    uniform float intensity;
+    uniform float radius;
+    varying vec2 vUv;
+    void main() {
+      vec4 c = texture2D(tDiffuse, vUv);
+      vec2 d = vUv - 0.5;
+      float dist = length(d);
+      float vig = smoothstep(radius, radius * 1.55, dist);
+      gl_FragColor = vec4(c.rgb * (1.0 - vig * intensity), c.a);
+    }
+  `,
+}
+
+/** 屏幕空间体积光（God Rays v1，R2）：沿"像素→太阳屏幕方向"径向采样并加权累计，
+ *  只放大高亮流（太阳盘/夕照天空/浮尘承接），additive 叠加 → 夕阳丁达尔光柱。
+ *  - uSunRaw 为太阳归一化屏幕坐标（用于屏内/屏外判定）；
+ *    uSun 钳制到屏内 → 太阳在屏外时产生"屏外斜射"经典光型（默认逆光构图的常态）
+ *  - dither 为静态哈希（无时间噪声 → 不引入闪烁）
+ *  - 仅在强机上启用；R3 采样 56→48（性能平衡） */
+const godRaysShader = {
+  uniforms: {
+    tDiffuse: { value: null as THREE.Texture | null },
+    uSunRaw: { value: new THREE.Vector2(2, 2) },
+    uSun: { value: new THREE.Vector2(0.85, 0.5) },
+    strength: { value: 0.2 },
+    samples: { value: 48 },
+  },
+  vertexShader: /* glsl */`
+    varying vec2 vUv;
+    void main() {
+      vUv = uv;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  `,
+  fragmentShader: /* glsl */`
+    uniform sampler2D tDiffuse;
+    uniform vec2 uSunRaw;
+    uniform vec2 uSun;
+    uniform float strength;
+    uniform int samples;
+    varying vec2 vUv;
+    float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+    void main() {
+      vec3 col = texture2D(tDiffuse, vUv).rgb;
+      // 太阳真正在屏内时给满强度；屏外仅保留斜射光路（轻微）
+      float inScreen = step(0.0, uSunRaw.x) * step(uSunRaw.x, 1.0) * step(0.0, uSunRaw.y) * step(uSunRaw.y, 1.0);
+      float gain = mix(0.35, 1.0, inScreen);
+      vec2 dir = uSun - vUv;
+      float dither = hash(vUv + vec2(0.137, 0.31));
+      vec3 rays = vec3(0.0);
+      for (int i = 0; i < 48; i++) {
+        if (i >= samples) break;
+        float u = (float(i) + dither) / 48.0;
+        vec2 p = vUv + dir * u;
+        // 采样越靠近太阳的像素权重越高（光路衰减的屏幕空间近似）
+        float reach = (1.0 - u) * (1.0 - u);
+        rays += texture2D(tDiffuse, p).rgb * reach;
+      }
+      rays /= 48.0;
+      float lum = dot(rays, vec3(0.299, 0.587, 0.114));
+      // 只放大"亮的光路"，避免整屏提亮；强度收敛防止过曝
+      vec3 extra = rays * lum * strength * gain * 0.8;
+      extra = min(extra, vec3(0.35));
+      gl_FragColor = vec4(col + extra, 1.0);
     }
   `,
 }
@@ -103,12 +206,15 @@ export class PlantScene {
   private container: HTMLElement
   private composer: EffectComposer | null = null
   private ssaoPass: SSAOPass | null = null
+  private godRays: ShaderPass | null = null
   private equipmentGroups: THREE.Group[] = []
   private pipes: BuiltPipe[] = []
   private dataBars: DataBar[] = []
   private panels: Panel[] = []
   private barRoot = new THREE.Group()
   private dataSource = new MockDataSource()
+  /** R4: 发光阈值不变量校验结果（空 = 通过），供快照/回归测试读取 */
+  invariants: string[] = []
   private clock = new THREE.Clock()
   private rafId = 0
   private raycaster = new THREE.Raycaster()
@@ -156,6 +262,13 @@ export class PlantScene {
 
   constructor(container: HTMLElement) {
     this.container = container
+    // 调试句柄：浏览器控制台/自动化可访问场景运行时状态（迭代调参用）
+    ;(window as unknown as { __ps?: PlantScene }).__ps = this
+    // 调试句柄：暴露 THREE 命名空间（射线检测/自动化分析用；随 __ps 一同只在 dev 调试有意义）
+    ;(window as unknown as { __THREE__?: typeof THREE }).__THREE__ = THREE
+    // R4 闪烁回归校验：发光强度 vs Bloom 阈值 5.0 的不变量（见 emissionInvariants.ts）。
+    // 违规时 console.error；快照工具会读取并纳入每轮验证
+    this.invariants = assertEmissionInvariants()
     this.diagram = new Diagram(container, { theme: 'DARK', mode: 'VIEW' })
 
     const renderer = this.diagram.renderer
@@ -163,8 +276,12 @@ export class PlantScene {
     const weak = navigator.hardwareConcurrency ? navigator.hardwareConcurrency <= 4 : false
     renderer.shadowMap.enabled = !weak
     renderer.shadowMap.type = THREE.PCFSoftShadowMap
-    renderer.toneMapping = THREE.ACESFilmicToneMapping
-    renderer.toneMappingExposure = 1.15 // 黄昏整体偏暗，略提曝光避免发闷
+    // AgX：高光滚出平滑不猝死白、饱和度保持优于 ACES（ACES 会把金属压灰）
+    // 工业可视化首选；若需更强"电影感"可切回 ACESFilmicToneMapping
+    renderer.toneMapping = THREE.AgXToneMapping
+    // v10：0.62 → 0.85 —— 光照整体降档（sun 4.6→3.4 / IBL 0.55→0.38）后，
+    // 曝光回升把中间调放回正确位置，高光不过曝、暗部沉得下去
+    renderer.toneMappingExposure = 0.95
     ;(renderer.shadowMap as any).blurSamples = 8 // 落日柔和长影
     // 像素比：高分屏（DPI>1）必须按设备像素比渲染，否则全局模糊（拉远更明显）
     // 弱机降到 1 保帧率，其余封顶 2 兼顾清晰度与性能
@@ -173,6 +290,12 @@ export class PlantScene {
     // 必须先切换透视相机：enablePerspectiveCamera() 会替换 this.camera，
     // 后处理 RenderPass 需要引用最终相机（否则拿着被替换的旧相机渲染 → 黑屏）
     ;(this.diagram as any).enablePerspectiveCamera()
+    // v10 深度精度修复：near 0.1 → 0.5、far 2000 → 1500。
+    // 原 near/far 比例下 200m 处深度分辨率 ~4cm，地面贴花（标线/油渍仅悬浮 1~2cm）
+    // 在拉远视角时深度值交替 → z-fighting 闪烁；收紧后 ~0.7cm，配合贴花抬高 3cm 双保险
+    this.diagram.camera.near = 0.5
+    this.diagram.camera.far = 1500
+    this.diagram.camera.updateProjectionMatrix()
     // 初始镜头：低视角面向落日（逆光），设备呈剪影轮廓，背景为晚霞，电影感更强
     this.diagram.camera.position.set(55, 48, -95)
     this.diagram.controls.target.set(0, 6, 0)
@@ -199,10 +322,16 @@ export class PlantScene {
     this.cityBeacons = env.cityBeacons
     this.beacons = buildWarningLights(this.diagram.scene)
 
+    // ── 移除 Diagram 基座遗留灯光（v10 定位的"白色光斑"显示 bug 根源）──
+    // aurea-eden Diagram 自带两个无衰减点光（decay=0/distance=0，位于地下异常坐标）
+    // + 一个 AmbientLight。无衰减点光会隔空照亮场景中部的透明粒子/雾滴，
+    // 在设备剪影之间形成一团持续存在的"白色光斑"（用户报告的闪烁光效 bug 实体）。
+    // 本项目有完整 PBR 光照体系（直射太阳 + 补光 + rim + IBL + 半球光），全部移除
+    const legacyLights: THREE.Object3D[] = []
     this.diagram.scene.traverse(o => {
-      if (o instanceof THREE.PointLight && o.distance === 0) o.intensity *= 0.08
-      else if (o instanceof THREE.AmbientLight) o.intensity = 0.12
+      if (o instanceof THREE.PointLight || o instanceof THREE.AmbientLight) legacyLights.push(o)
     })
+    legacyLights.forEach(o => o.parent?.remove(o))
 
     // ── 接管渲染循环：断链 Diagram 自带 animate（rAF 持有 bind 引用，需先 cancel） ──
     cancelAnimationFrame((this.diagram as any).animationFrameId)
@@ -226,12 +355,25 @@ export class PlantScene {
       ssao.output = SSAOPass.OUTPUT.Default
       this.composer.addPass(ssao)
       this.ssaoPass = ssao
-      // Bloom 泛光：落日高光 + 自发光元件柔和发光（阈值略降强化夕阳）
-      this.composer.addPass(new UnrealBloomPass(new THREE.Vector2(size.x, size.y), 0.5, 0.55, 0.72))
+      // Bloom 泛光 v10（HDR 光源分离）：阈值 1.1 → 5.0。
+      // v9 缺陷：Preetham 天空线性亮度 2~4 全部 >1.1 → 整片天空参与泛光 →
+      // 全屏灰白蒙板（劣质感主因之一）。HDR 正统做法：自发光体亮度拉到 6~9，
+      // 阈值 5 只让真光源（太阳/火焰/灯具/航空灯）泛光，亮面与天空不泛光。
+      // v10b：strength 0.45→0.3 / radius 0.55→0.35 —— 太阳光晕经 sky 亮度钳制
+      // 后已可控，进一步收小光晕半径消除 mip 块状伪影
+      this.composer.addPass(new UnrealBloomPass(new THREE.Vector2(size.x, size.y), 0.3, 0.35, 5.0))
       // 注：不使用景深（Bokeh）—— 总览视角下远景会被模糊化，导致"拉远发糊"
+    }
+    // R2 体积光（God Rays）：必须接在 Bloom 之后（光晕成为光路的光源），
+    // 再进入分级/晕影。强机专属；弱机整段跳过
+    if (!weak) {
+      this.godRays = new ShaderPass(godRaysShader)
+      this.composer.addPass(this.godRays)
     }
     // 青橙色彩分级：暗部偏冷青、高光偏暖橙（统一黄昏调性）
     this.composer.addPass(new ShaderPass(tealOrangeShader))
+    // v11 微晕影：收拢视线至主体 + 压住四角天空高亮
+    this.composer.addPass(new ShaderPass(vignetteShader))
     this.composer.addPass(new OutputPass())
     window.addEventListener('resize', this.onComposerResize)
 
@@ -262,6 +404,16 @@ export class PlantScene {
       this.diagram.scene.add(label)
       const lamps: THREE.Mesh[] = []
       g.traverse(o => { if (o instanceof THREE.Mesh && o.userData.isLamp) lamps.push(o) })
+      // v11 修复：指示灯原共享 `lampGlass(color)` 材质 —— 任何一台设备报警/停车时
+      // 会改写全厂同色灯珠的 emissive（颜色/强度串扰），报警时全厂灯一起频闪。
+      // 按设备克隆一份专属材质，使每台设备的灯状态完全独立。
+      if (lamps.length) {
+        const own = (lamps[0].material as THREE.MeshStandardMaterial).clone()
+        for (const lamp of lamps) {
+          lamp.material = own
+          lamp.userData.curEi = own.emissiveIntensity
+        }
+      }
       g.userData.lamps = lamps
       g.userData.status = 'RUN'
     }
@@ -420,8 +572,15 @@ export class PlantScene {
     }
   }
 
-  private applyLamps(t: number) {
-    const flash = Math.sin(t * 5) > 0
+  private applyLamps(t: number, delta: number) {
+    // v11 闪烁修复核心：报警频闪不再用方波（5↔0.25 横跳 bloom 阈值 → 光晕瞬爆瞬灭），
+    // 改为陡斜坡（smoothstep 0.1s 过渡）+ 帧间指数平滑；报警档 6.4 全程高于
+    // bloom 阈值 5 → 光晕常驻、亮度平滑呼吸（真实警示灯 + 无频闪）。
+    const ph = (Math.sin(t * 5) + 1) / 2 // 0.8Hz 周期 0..1
+    const ramp = smoothstep(0.45, 0.55, ph)
+    const flash = ramp > 0.5
+    // 帧率无关的指数平滑系数（~0.15s 过渡）
+    const k = 1 - Math.exp(-22 * delta)
     for (const g of this.equipmentGroups) {
       const lamps = g.userData.lamps as THREE.Mesh[] | undefined
       if (!lamps?.length) continue
@@ -434,11 +593,16 @@ export class PlantScene {
       else if (st?.status === 'FAULT') { color = 0xe24b4a; on = flash }
       else if (st?.status === 'STOP') { color = 0x555b62; on = false }
       else { color = lamps[0].userData.lampBase ?? 0x37c871; on = true }
+      const target = on ? (alarm || st?.status === 'FAULT' ? 6.4 : 2.2) : 0.25
       for (const lamp of lamps) {
         const m = lamp.material as THREE.MeshStandardMaterial
         m.color.set(color)
         m.emissive.set(color)
-        m.emissiveIntensity = on ? 1.8 : 0.15
+        const cur = (lamp.userData.curEi as number) ?? 2.2
+        const next = cur + (target - cur) * k
+        lamp.userData.curEi = next
+        // 常亮态直接落位（避免 STOP→RUN 出现 0.4s 半亮残留）
+        m.emissiveIntensity = target === 2.2 && !alarm ? target : next
       }
     }
   }
@@ -679,12 +843,14 @@ export class PlantScene {
       if (stirrer) stirrer.rotation.y += status === 'RUN' ? 0.05 : 0
     }
 
-    this.applyLamps(t)
+    this.applyLamps(t, delta)
 
-    // 警示灯闪烁（红色航空障碍灯/信标，正弦呼吸 + 相位错开）
+    // 警示灯闪烁（红色航空障碍灯/信标）v11：v10 的 4.0~8.5 横跳 bloom 阈值 5 →
+    // 光晕忽大忽小 = 用户报告的"局部持续闪烁"。改为 6.1~8.2 全程高于阈值：
+    // 光晕常驻、亮度平滑呼吸，且呼吸幅度收敛
     for (let i = 0; i < this.beacons.length; i++) {
       const m = this.beacons[i].material as THREE.MeshStandardMaterial
-      m.emissiveIntensity = 1.2 + 2.2 * Math.max(0, Math.sin(t * 2.4 + i * 1.7))
+      m.emissiveIntensity = 6.1 + 2.1 * Math.max(0, Math.sin(t * 1.5 + i * 2.1))
     }
 
     // 冷却塔蒸汽（上升/膨胀/淡出循环）
@@ -730,6 +896,29 @@ export class PlantScene {
 
     // 巡检激活时跳过 OrbitControls 更新（PointerLock 负责旋转，避免被拉回）
     if (!this.firstPerson?.isActive) this.diagram.controls.update()
+
+    // R2 体积光：每帧重算太阳屏幕坐标（相机移动时方向随之变化）
+    if (this.godRays) {
+      const u = this.godRays.uniforms as unknown as {
+        uSunRaw: { value: THREE.Vector2 }, uSun: { value: THREE.Vector2 },
+      }
+      // 太阳方向转到相机空间（z>0 = 在相机前方）
+      const dirCam = SUN_DIRECTION.clone().transformDirection(this.diagram.camera.matrixWorldInverse)
+      const az = new THREE.Vector2(dirCam.x, dirCam.y)
+      const azLen = az.length()
+      if (dirCam.z > 0 && azLen > 1e-5) {
+        // 太阳在屏内：真实投影位置（NDC → 归一化屏幕坐标）
+        const ndc = SUN_DIRECTION.clone().multiplyScalar(600).project(this.diagram.camera)
+        u.uSunRaw.value.set(ndc.x * 0.5 + 0.5, ndc.y * 0.5 + 0.5)
+        u.uSun.value.copy(u.uSunRaw.value)
+      } else if (azLen > 1e-5) {
+        // 太阳在屏后（默认逆光构图）：按方位角推到对应屏边 → "屏外太阳斜射"光型
+        az.normalize()
+        const k = 0.5 / Math.max(Math.abs(az.x), Math.abs(az.y))
+        u.uSunRaw.value.set(2, 2) // 屏外标记
+        u.uSun.value.set(0.5 + az.x * k, 0.5 + az.y * k)
+      }
+    }
 
     // 渲染（接管后由后处理管线输出）
     this.composer?.render()

@@ -81,26 +81,47 @@ export function normalFromHeight(key: string, w: number, h: number, drawHeight: 
   return tex
 }
 
-/** 保温铝皮横纹（塔身/罐体包覆层）：浅灰底 + 波纹横条 + 竖向拼缝 + 金属噪点 */
+/** 保温铝皮横纹（塔身/罐体包覆层）：浅灰底 + 波纹横条 + 竖向拼缝 + 金属噪点
+ *  R3：256→512px；新增雨渍竖痕 + 锈蚀斑（做旧层次） */
 export function jacketTexture(): THREE.CanvasTexture {
-  return canvasTex('jacket', 256, 256, (ctx, w, h) => {
+  return canvasTex('jacket', 512, 512, (ctx, w, h) => {
     ctx.fillStyle = '#aeb6bd'
     ctx.fillRect(0, 0, w, h)
-    for (let y = 0; y < h; y += 16) {
+    for (let y = 0; y < h; y += 32) {
       ctx.fillStyle = 'rgba(255,255,255,0.10)'
-      ctx.fillRect(0, y, w, 3)
+      ctx.fillRect(0, y, w, 6)
       ctx.fillStyle = 'rgba(60,68,78,0.14)'
-      ctx.fillRect(0, y + 3, w, 3)
+      ctx.fillRect(0, y + 6, w, 6)
     }
     ctx.fillStyle = 'rgba(70,78,88,0.35)'
-    for (let x = 32; x < w; x += 64) ctx.fillRect(x, 0, 1.5, h)
+    for (let x = 64; x < w; x += 128) ctx.fillRect(x, 0, 3, h)
     ctx.fillStyle = 'rgba(120,128,138,0.6)'
-    for (let x = 24; x < w; x += 64) {
-      for (let y = 8; y < h; y += 32) {
-        ctx.beginPath(); ctx.arc(x, y, 1.6, 0, Math.PI * 2); ctx.fill()
+    for (let x = 48; x < w; x += 128) {
+      for (let y = 16; y < h; y += 64) {
+        ctx.beginPath(); ctx.arc(x, y, 3.2, 0, Math.PI * 2); ctx.fill()
       }
     }
-    for (let i = 0; i < 2200; i++) {
+    // 雨渍竖痕（环氧涂层顺流的水渍，略亮）
+    for (let i = 0; i < 10; i++) {
+      const x = Math.random() * w
+      const len = 60 + Math.random() * 220
+      ctx.strokeStyle = `rgba(220,228,236,${0.10 + Math.random() * 0.10})`
+      ctx.lineWidth = 2 + Math.random() * 4
+      ctx.beginPath(); ctx.moveTo(x, Math.random() * h)
+      ctx.lineTo(x + (Math.random() - 0.5) * 12, Math.min(h, (Math.random() * h) + len))
+      ctx.stroke()
+    }
+    // 锈蚀斑（保温铝皮包角/拼缝处氧化，暖褐）
+    for (let i = 0; i < 6; i++) {
+      const x = Math.random() * w, y = Math.random() * h
+      const r = 14 + Math.random() * 44
+      const g = ctx.createRadialGradient(x, y, 0, x, y, r)
+      g.addColorStop(0, `rgba(150,98,58,${0.10 + Math.random() * 0.12})`)
+      g.addColorStop(1, 'rgba(150,98,58,0)')
+      ctx.fillStyle = g
+      ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill()
+    }
+    for (let i = 0; i < 8800; i++) {
       const v = 170 + Math.random() * 70 | 0
       ctx.fillStyle = `rgba(${v},${v + 4},${v + 8},${0.05 + Math.random() * 0.08})`
       ctx.fillRect(Math.random() * w, Math.random() * h, 1, 1)
@@ -110,17 +131,17 @@ export function jacketTexture(): THREE.CanvasTexture {
 
 /** 保温铝皮法线贴图（波纹横条起伏 + 搭接缝凹槽） */
 export function jacketNormal(): THREE.CanvasTexture {
-  return normalFromHeight('jacket', 256, 256, (ctx, w, h) => {
+  return normalFromHeight('jacket', 512, 512, (ctx, w, h) => {
     ctx.fillStyle = '#808080'
     ctx.fillRect(0, 0, w, h)
-    for (let y = 0; y < h; y += 16) {
+    for (let y = 0; y < h; y += 32) {
       ctx.fillStyle = '#a0a0a0'
-      ctx.fillRect(0, y, w, 3)
+      ctx.fillRect(0, y, w, 6)
       ctx.fillStyle = '#606060'
-      ctx.fillRect(0, y + 3, w, 3)
+      ctx.fillRect(0, y + 6, w, 6)
     }
     ctx.fillStyle = '#484848'
-    for (let x = 32; x < w; x += 64) ctx.fillRect(x, 0, 2, h)
+    for (let x = 64; x < w; x += 128) ctx.fillRect(x, 0, 4, h)
   }, 2.0, 3, 4)
 }
 
@@ -187,12 +208,14 @@ export function brushedNormal(): THREE.CanvasTexture {
   }, 0.6, 3, 3)
 }
 
-/** 混凝土：浅灰底 + 骨料颗粒 + 接缝 + 少量油渍（整洁工业地坪，明亮不压暗） */
+/** 混凝土：浅灰底 + 骨料颗粒 + 接缝 + 少量油渍（整洁工业地坪，明亮不压暗）
+ *  v11：256→512px、repeat 6x4→10x6 —— 单 tile 由 ~36m 缩至 ~22m，纹素密度
+ *  提升 3 倍+（7px/m → 23px/m），消除拉远/俯视时地面"糊"（大厂统一纹素密度基准） */
 export function concreteTexture(): THREE.CanvasTexture {
-  return canvasTex('concrete', 256, 256, (ctx, w, h) => {
+  return canvasTex('concrete', 512, 512, (ctx, w, h) => {
     ctx.fillStyle = '#8d939a' // 浅灰底（提亮，避免黄昏下地面发黑）
     ctx.fillRect(0, 0, w, h)
-    for (let i = 0; i < 2600; i++) {
+    for (let i = 0; i < 10000; i++) {
       const v = 120 + Math.random() * 60 | 0
       ctx.fillStyle = `rgba(${v},${v},${v + 3},${0.10 + Math.random() * 0.12})`
       ctx.beginPath()
@@ -200,28 +223,36 @@ export function concreteTexture(): THREE.CanvasTexture {
       ctx.fill()
     }
     // 少量油渍暗斑（保留使用痕迹但控制面积/深度）
-    for (let i = 0; i < 7; i++) {
+    for (let i = 0; i < 14; i++) {
       const x = Math.random() * w, y = Math.random() * h
-      const r = 6 + Math.random() * 18
+      const r = 10 + Math.random() * 34
       const grad = ctx.createRadialGradient(x, y, 0, x, y, r)
       grad.addColorStop(0, `rgba(52,56,62,${0.08 + Math.random() * 0.08})`)
       grad.addColorStop(1, 'rgba(52,56,62,0)')
       ctx.fillStyle = grad
       ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill()
     }
-    // 模板分缝（浅色，不挖黑）
+    // 模板分缝（浅色，不挖黑）+ 随机细裂缝（做旧）
     ctx.strokeStyle = 'rgba(70,76,84,0.4)'
     ctx.lineWidth = 1.5
     ctx.strokeRect(8, 8, w - 16, h - 16)
-  }, 6, 4)
+    ctx.strokeStyle = 'rgba(60,66,74,0.25)'
+    ctx.lineWidth = 1
+    for (let i = 0; i < 6; i++) {
+      const x = Math.random() * w, y = Math.random() * h
+      ctx.beginPath(); ctx.moveTo(x, y)
+      ctx.lineTo(x + (Math.random() - 0.5) * 60, y + (Math.random() - 0.5) * 60)
+      ctx.stroke()
+    }
+  }, 10, 6)
 }
 
 /** 混凝土地坪法线贴图（骨料微凸 + 分缝凹槽，低强度保持平整感） */
 export function concreteNormal(): THREE.CanvasTexture {
-  return normalFromHeight('concrete', 256, 256, (ctx, w, h) => {
+  return normalFromHeight('concrete', 512, 512, (ctx, w, h) => {
     ctx.fillStyle = '#808080'
     ctx.fillRect(0, 0, w, h)
-    for (let i = 0; i < 1400; i++) {
+    for (let i = 0; i < 5600; i++) {
       const v = 118 + Math.random() * 28 | 0
       ctx.fillStyle = `rgb(${v},${v},${v})`
       ctx.beginPath()
@@ -231,7 +262,7 @@ export function concreteNormal(): THREE.CanvasTexture {
     ctx.strokeStyle = '#5c5c5c'
     ctx.lineWidth = 2
     ctx.strokeRect(8, 8, w - 16, h - 16)
-  }, 0.55, 6, 4)
+  }, 0.55, 10, 6)
 }
 
 /** 镀锌结构钢：灰底 + 锌花斑驳 */

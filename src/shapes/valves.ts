@@ -42,8 +42,10 @@ export function buildValve(diameter: number): BuiltValve {
     spoke.rotation.z = -a
     g.add(spoke)
   }
-  // 状态指示灯
-  const indicator = new THREE.Mesh(new THREE.SphereGeometry(d * 0.11, 8, 6), lampGlass(0x37c871))
+  // 状态指示灯（R2：克隆材质 —— 原共享 lampGlass(0x37c871) 与设备灯同实例，
+  // setOpen 改色会串扰全厂其它阀门/设备灯；每个阀门独立一份）
+  const indicatorMat = (lampGlass(0x37c871) as THREE.MeshStandardMaterial).clone()
+  const indicator = new THREE.Mesh(new THREE.SphereGeometry(d * 0.11, 8, 6), indicatorMat)
   indicator.position.y = d * 1.15
   g.add(indicator)
   indicator.userData.isLamp = true

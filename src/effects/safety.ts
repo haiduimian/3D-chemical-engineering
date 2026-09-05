@@ -113,8 +113,10 @@ export class FireEffect {
       this.positions[i * 3 + 2] += Math.cos(life * 5 + i) * 0.05 * dt
     }
     ;(this.particles.geometry.attributes.position as THREE.BufferAttribute).needsUpdate = true
-    // 光强闪烁
-    this.light.intensity = 30 + Math.sin(t * 9) * 10 + Math.random() * 6
+    // v11 光强闪烁平滑化：v1 的 `Math.random()*6` 每帧随机抖动 → 光斑 60Hz 级
+    // 噪声闪烁。改为两层低频正弦叠加（主燃烧脉动 1.2Hz + 高频微颤 1.9Hz +
+    // 慢呼吸 0.08Hz），波形连续无随机跳变
+    this.light.intensity = 26 + Math.sin(t * 7.3) * 10 + Math.sin(t * 11.7) * 6 + Math.sin(t * 0.53) * 4
   }
 }
 
