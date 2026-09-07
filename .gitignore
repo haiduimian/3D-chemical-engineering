@@ -8,3 +8,10 @@ npm-ver.txt
 .shots
 
 dist-bak-*
+# 遗留/第三方进程产物（R10：外部进程在 scripts/ 生成的调研脚本与产物，不纳入版本库）
+scripts/_*.mjs
+scripts/bench-*.mjs
+scripts/context7-*.mjs
+scripts/firecrawl-benchmark.mjs
+docs/research/context7-docs-raw.json
+docs/research/firecrawl-benchmark-raw.json
