@@ -102,7 +102,9 @@ export interface PipeVia {
 export interface PipeDef {
   id: string
   color: keyof typeof import('../materials/pbr').PIPE_COLORS
-  diameter: number
+  /** 管径（m）。缺省 = auto：autoDiameter(from,to) = max(两端端口口径) ——
+   *  R10 口径一致性：管线粗细必须适应设备口径，禁止管细于设备管嘴 */
+  diameter?: number
   flow: number          // 流速动画速度 0~1；>0 正向、<0 反向
   from: string          // 起点端口 ID（PORTS 注册表）
   to: string            // 终点端口 ID
@@ -122,7 +124,7 @@ export const PIPES: PipeDef[] = [
     from: 'V101-OUT-1', to: 'M101-IN-AA', via: [{ pump: 'P-101' }],
   },
   {
-    id: 'pipe-meoh', color: 'methanol', diameter: 0.4, flow: 1.0,
+    id: 'pipe-meoh', color: 'methanol', flow: 1.0, // R10: 0.4 → auto(两端 0.35/0.35)=0.35，粗细随设备口径
     from: 'V102-OUT-1', to: 'M101-IN-MEOH', via: [{ pump: 'P-102' }],
   },
   // 混合器 → 预热器 → 反应器（地面低架，带管托支撑）
@@ -173,8 +175,10 @@ export const PIPES: PipeDef[] = [
     from: 'T103-BOT', to: 'V105-IN-1', via: [{ x: 42, z: 28 }, { x: 48, z: -6 }],
   },
   // 阻聚剂：V-104 → P-105（主管）→ 三路支管分送三塔塔顶（错开高度层，避免重叠/穿塔）
+  // R10: diameter 缺省 → auto=max(V104 0.16, P105-OUT 0.22)=0.22 —— 泵出口主管按出口口径加粗，
+  //      V-104 端由大小头过渡（0.22→0.16），"粗细适应设备口径"（白皮书 N3-P0）
   {
-    id: 'pipe-hq-main', color: 'inhibitor', diameter: 0.16, flow: 0.35,
+    id: 'pipe-hq-main', color: 'inhibitor', flow: 0.35,
     from: 'V104-OUT-1', to: 'P105-OUT', via: [{ pump: 'P-105' }],
   },
   // R7: 三支管原共用 P105-OUT → 泵出口段完全重合；且支管与塔顶主流管线

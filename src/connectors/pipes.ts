@@ -1,18 +1,24 @@
 import * as THREE from 'three'
 import { pipeMaterial, PIPE_COLORS, structuralSteel, machinedSteel, concrete, stainless, insulation, traceTube } from '../materials/pbr'
 import type { PipeDef } from '../layout/plantLayout'
-import { PORTS, portWorldPos } from '../layout/ports'
+import { PORTS, portWorldPos, autoDiameter } from '../layout/ports'
 import { resolvePipePath, roundedPolyline } from './path'
 import { buildValve, type BuiltValve } from '../shapes/valves'
 
 /**
- * 工艺管线构建器 v4
+ * 工艺管线构建器 v5（R10）
  * - 路径：端口引用 → L 形分层折线 → roundedPolyline 圆角弯头（工程 R≈3D）→ 管体
- * - 大小头（异径管）：端口直径 ≠ 管径时，端部做锥台过渡 + 端口短管，衔接平滑
+ * - 口径一致性：管线有效直径 = 显式 diameter ?? autoDiameter(端口口径较大值)；
+ *   端口交界处：法兰盘（口径×1.85 扁圆柱）+ 端口短管 + 大小头（异径管）锥台
  * - 流向：锥形箭头沿切线（flow<0 反向）+ 发光脉冲
- * - 阀门：起点/终点/泵出入口自动放置；低架管线加管托支撑
+ * - 阀门：起点/终点/泵出入口自动放置；低架管线加管托支撑；管廊层管线加管廊托架
  * - 伴热：高温/易凝管线叠加蒸汽伴热细管（工艺真实感）
  */
+
+/** R10：管线有效口径（缺省由端口口径推导 —— "粗细适应设备口径"） */
+export function effectiveDiameter(def: PipeDef): number {
+  return def.diameter ?? autoDiameter(def.from, def.to, def.via ?? [])
+}
 
 /** 需要蒸汽伴热的管线（高温物料/易凝介质） */
 const TRACED_PIPES = new Set(['pipe-r-t101', 'pipe-acid-recycle', 'pipe-pre-r'])
@@ -22,7 +28,8 @@ function addTracingPipe(group: THREE.Group, curve: THREE.CatmullRomCurve3, def: 
   if (!TRACED_PIPES.has(def.id)) return
   // 伴热管路径：主管曲线各点向外侧偏移（水平段偏 +z 侧，竖直段偏 +x 侧）
   const pts: THREE.Vector3[] = []
-  const offset = def.diameter + 0.09
+  const d = effectiveDiameter(def)
+  const offset = d + 0.09
   const N = 60
   for (let i = 0; i <= N; i++) {
     const u = i / N
@@ -32,7 +39,7 @@ function addTracingPipe(group: THREE.Group, curve: THREE.CatmullRomCurve3, def: 
     const side = new THREE.Vector3(-tan.z, 0, tan.x)
     if (side.lengthSq() < 0.01) side.set(1, 0, 0) // 竖直段
     side.normalize()
-    pts.push(p.clone().addScaledVector(side, offset).add(new THREE.Vector3(0, -def.diameter * 0.5, 0)))
+    pts.push(p.clone().addScaledVector(side, offset).add(new THREE.Vector3(0, -d * 0.5, 0)))
   }
   const traceCurve = new THREE.CatmullRomCurve3(pts, false, 'catmullrom', 0)
   // R7：材质 stainless() → traceTube()（哑光铝皮，消除特定角度整条镜面白带）
@@ -79,11 +86,12 @@ const gaugeNeedleMat = new THREE.MeshStandardMaterial({ color: 0xc23b2e, roughne
 function addLocalInstruments(group: THREE.Group, curve: THREE.CatmullRomCurve3, def: PipeDef): THREE.Object3D | null {
   // 仅长管线（≥18m）放置，控制总量
   if (curve.getLength() < 18) return null
+  const d = effectiveDiameter(def)
   const pos = curve.getPointAt(0.5)
   const tan = curve.getTangentAt(0.5)
   if (Math.abs(tan.y) > 0.3) return null // 仅水平段
   const side = new THREE.Vector3(-tan.z, 0, tan.x).normalize()
-  const base = pos.clone().add(new THREE.Vector3(0, def.diameter, 0))
+  const base = pos.clone().add(new THREE.Vector3(0, d, 0))
   // 仪表导管（自管顶引出）
   const stem = new THREE.Mesh(gaugeStemGeo, gaugeRimMat)
   stem.position.copy(base).add(new THREE.Vector3(0, 0.15, 0))
@@ -153,67 +161,113 @@ function collectValvePositions(def: PipeDef, pts: THREE.Vector3[]): THREE.Vector
   return out
 }
 
-/** 端口端部衔接：端口直径短管 + 大小头（异径管）锥台过渡；泵出入口由泵模型自带，跳过 */
+/** 端口端部衔接（R10 增强）：法兰盘 + 端口直径短管 + 大小头（异径管）锥台。
+ *  法兰盘直径 = 端口口径 ×1.85（扁圆柱）贴设备管口 —— "管线与设备交界"的视觉锚点；
+ *  泵出入口由泵模型自带法兰，仅补法兰盘不画短管/锥台（避免穿泵体） */
 function addPortTransition(group: THREE.Group, portId: string, def: PipeDef, tubeMat: THREE.MeshStandardMaterial) {
   const port = PORTS[portId]
   if (!port) return
-  if (port.kind === 'pumpIn' || port.kind === 'pumpOut') return
+  const pumpish = port.kind === 'pumpIn' || port.kind === 'pumpOut'
   const pw = portWorldPos(portId)
   const dir = new THREE.Vector3(...port.dir).normalize()
+  const d = effectiveDiameter(def)
+  // 法兰盘（碳钢机加工面，所有端口统一补——泵口也补平垫环，机器视觉统一）
+  const flange = new THREE.Mesh(
+    new THREE.CylinderGeometry(port.diameter * 1.85, port.diameter * 1.85, pumpish ? 0.06 : 0.09, 16),
+    machinedSteel(),
+  )
+  flange.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir)
+  flange.position.copy(pw).addScaledVector(dir, pumpish ? 0.03 : 0.06)
+  group.add(flange)
+  if (pumpish) return
   const shortLen = 0.5
   // 端口直径短管（与设备接管对接）
   const short = new THREE.Mesh(new THREE.CylinderGeometry(port.diameter, port.diameter, shortLen, 14), tubeMat)
   short.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir)
-  short.position.copy(pw).addScaledVector(dir, shortLen / 2)
+  short.position.copy(pw).addScaledVector(dir, shortLen / 2 + 0.09)
   group.add(short)
   // 大小头：端口直径 → 管线直径（锥台，长 0.9，工程异径管）
-  if (Math.abs(port.diameter - def.diameter) > 0.02) {
+  if (Math.abs(port.diameter - d) > 0.02) {
     const redLen = 0.9
     const reducer = new THREE.Mesh(
-      new THREE.CylinderGeometry(def.diameter, port.diameter, redLen, 14),
+      new THREE.CylinderGeometry(d, port.diameter, redLen, 14),
       tubeMat,
     )
     reducer.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir)
-    reducer.position.copy(pw).addScaledVector(dir, shortLen + redLen / 2)
+    reducer.position.copy(pw).addScaledVector(dir, shortLen + 0.09 + redLen / 2)
     group.add(reducer)
   }
 }
 
-/** 管托支撑（仅低架管线 viaY ≤ 4.5）：混凝土墩 + 立柱 + 顶部鞍座，间隔 ~12m */
+/** 管廊横梁层（environment.ts mkRack 同步）：R10 管廊托架匹配用 */
+const RACK_LAYERS = [
+  { z: -6, topY: 7.6, spanX: [-60, 30] as [number, number] },
+  { z: 28, topY: 7.6, spanX: [15, 45] as [number, number] },
+]
+
+/** 管托支撑（低架 viaY ≤ 4.5：混凝土墩立柱；管廊层 5.6~7.6 且水平段在管廊 z 上：管廊托架） */
 function addPipeSupports(group: THREE.Group, curve: THREE.CatmullRomCurve3, def: PipeDef) {
   const viaY = def.viaY ?? 6
-  if (viaY > 4.5) return
   const total = curve.getLength()
-  const count = Math.max(1, Math.floor(total / 12))
+  const isRack = viaY > 4.5 && viaY <= 7.6
+  if (!isRack && viaY > 4.5) return
+  const count = Math.max(1, Math.floor(total / (isRack ? 8 : 12)))
   for (let i = 0; i < count; i++) {
     const u = (i + 0.5) / count
     const pos = curve.getPointAt(u)
     if (Math.abs(pos.y - viaY) > 0.9) continue // 仅水平段
-    const sup = new THREE.Group()
-    // 立柱（地面到管线底部）
-    const postH = Math.max(0.4, pos.y - 0.08)
-    const post = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.08, postH, 8), structuralSteel())
-    post.position.y = pos.y - 0.08 - postH / 2
-    sup.add(post)
-    // 混凝土墩
-    const base = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.14, 0.4), concrete())
-    base.position.y = 0.07
-    sup.add(base)
-    // 顶部鞍座
-    const saddle = new THREE.Mesh(
-      new THREE.TorusGeometry(def.diameter * 1.15, def.diameter * 0.32, 6, 12),
-      structuralSteel(),
-    )
-    saddle.rotation.x = Math.PI / 2
-    saddle.position.y = pos.y - def.diameter * 0.4
-    sup.add(saddle)
-    sup.position.set(pos.x, 0, pos.z)
-    group.add(sup)
+    if (isRack) {
+      // 管廊托架：仅当水平段位于某道管廊 z±1.6 内，且管线在梁顶上方可达
+      const rack = RACK_LAYERS.find(r => Math.abs(r.z - pos.z) <= 1.6 && pos.x >= r.spanX[0] && pos.x <= r.spanX[1])
+      if (!rack) continue
+      const sup = new THREE.Group()
+      const d = effectiveDiameter(def)
+      // 短支柱：梁顶 7.6 → 管线底部
+      const postH = Math.max(0.3, pos.y - d - rack.topY)
+      if (postH > 0.3) {
+        const post = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, postH, 8), structuralSteel())
+        post.position.y = rack.topY + postH / 2
+        sup.add(post)
+        // 顶部鞍座
+        const saddle = new THREE.Mesh(
+          new THREE.TorusGeometry(d * 1.15, d * 0.32, 6, 12),
+          structuralSteel(),
+        )
+        saddle.rotation.x = Math.PI / 2
+        saddle.position.y = pos.y - d * 0.4
+        sup.add(saddle)
+      }
+      sup.position.set(pos.x, 0, pos.z)
+      group.add(sup)
+    } else {
+      const sup = new THREE.Group()
+      const d = effectiveDiameter(def)
+      // 立柱（地面到管线底部）
+      const postH = Math.max(0.4, pos.y - 0.08)
+      const post = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.08, postH, 8), structuralSteel())
+      post.position.y = pos.y - 0.08 - postH / 2
+      sup.add(post)
+      // 混凝土墩
+      const base = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.14, 0.4), concrete())
+      base.position.y = 0.07
+      sup.add(base)
+      // 顶部鞍座
+      const saddle = new THREE.Mesh(
+        new THREE.TorusGeometry(d * 1.15, d * 0.32, 6, 12),
+        structuralSteel(),
+      )
+      saddle.rotation.x = Math.PI / 2
+      saddle.position.y = pos.y - d * 0.4
+      sup.add(saddle)
+      sup.position.set(pos.x, 0, pos.z)
+      group.add(sup)
+    }
   }
 }
 
 export function buildPipe(def: PipeDef): BuiltPipe {
   const color = PIPE_COLORS[def.color]
+  const d = effectiveDiameter(def) // R10：管线粗细随设备口径
   const pts = resolvePipePath(def)
   const curve = roundedCornerPath(roundedPolyline(pts, 1.2))
 
@@ -222,7 +276,7 @@ export function buildPipe(def: PipeDef): BuiltPipe {
   tubeMat.emissive = new THREE.Color(color)
   tubeMat.emissiveIntensity = 0.12
 
-  const tube = new THREE.Mesh(new THREE.TubeGeometry(curve, 200, def.diameter, 12, false), tubeMat)
+  const tube = new THREE.Mesh(new THREE.TubeGeometry(curve, 200, d, 12, false), tubeMat)
   tube.castShadow = true
   const group = new THREE.Group()
   group.add(tube)
@@ -256,7 +310,7 @@ export function buildPipe(def: PipeDef): BuiltPipe {
     const u = (i + 0.5) / arrowCount
     const pos = curve.getPointAt(u)
     const tan = curve.getTangentAt(u).multiplyScalar(sign).normalize()
-    const arrow = new THREE.Mesh(new THREE.ConeGeometry(def.diameter * 0.6, def.diameter * 1.5, 8), arrowMat)
+    const arrow = new THREE.Mesh(new THREE.ConeGeometry(d * 0.6, d * 1.5, 8), arrowMat)
     arrow.position.copy(pos)
     arrow.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), tan)
     group.add(arrow)
@@ -266,7 +320,7 @@ export function buildPipe(def: PipeDef): BuiltPipe {
   // 阀门
   const valves: BuiltValve[] = []
   for (const vp of collectValvePositions(def, pts)) {
-    const v = buildValve(def.diameter * 1.25)
+    const v = buildValve(d * 1.25)
     v.group.position.copy(vp)
     group.add(v.group)
     valves.push(v)
@@ -283,7 +337,7 @@ export function buildPipe(def: PipeDef): BuiltPipe {
     roughness: 0.55, metalness: 0.1,
   })
   for (let i = 0; i < pulseCount; i++) {
-    const p = new THREE.Mesh(new THREE.SphereGeometry(def.diameter * 0.62, 10, 8), pulseMat)
+    const p = new THREE.Mesh(new THREE.SphereGeometry(d * 0.62, 10, 8), pulseMat)
     group.add(p)
     pulses.push(p)
   }

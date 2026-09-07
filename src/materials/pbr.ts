@@ -45,10 +45,11 @@ export const insulation = () => mat('insulation', {
 })
 
 /** 碳钢漆面（反应器/罐体，可按色定制）—— 工程漆橘皮 + 清漆层（设备漆质感核心）
- *  R9（N2-PBR 铁律复核）：metalness 0.18 → 0.06 —— 漆膜 = 非金属（F0≈0.04 电介质），
- *  光泽全部由 clearcoat 0.85 承担（大厂 PBR 二值化：金属 ≈1、非金属 ≈0，杜绝"半金属"） */
+ *  R9：metalness 0.18 → 0.06 —— 漆膜 = 非金属（F0≈0.04 电介质）
+ *  R10：0.06 → 0.0 二值化收尾（基准 Roblox/Substance：Painted metal metalness 0.0；
+ *  金属非黑即白，残留 0.06 只会产生灰调半金属反射），光泽全部由 clearcoat 0.85 承担 */
 export const paintedSteel = (color = 0x2e6e5e) => mat(`painted_${color}`, {
-  color, metalness: 0.06, roughness: 0.52 / GRIME_BASE,
+  color, metalness: 0.0, roughness: 0.52 / GRIME_BASE,
   map: paintedTexture(color), normalMap: paintedNormal(), normalScale: new THREE.Vector2(0.28, 0.28),
   roughnessMap: grimeR, aoMap: grimeA, aoMapIntensity: 0.28,
   clearcoat: 0.85, clearcoatRoughness: 0.22, // 工程漆：漆膜亮层覆盖粗糙橘皮底
@@ -107,18 +108,18 @@ export const traceTube = () => mat('trace', {
   envMapIntensity: 0.45,
 })
 
-/** 泵体蓝（R9：metalness 0.32 → 0.12 —— 设备漆面非金属化） */
+/** 泵体蓝（R9：metalness 0.32 → 0.12；R10：0.12 → 0.0 漆面二值化收尾） */
 export const pumpBody = () => mat('pump', {
-  color: 0x1e5fa8, metalness: 0.12, roughness: 0.46 / GRIME_BASE,
+  color: 0x1e5fa8, metalness: 0.0, roughness: 0.46 / GRIME_BASE,
   map: paintedTexture(0x1e5fa8), normalMap: paintedNormal(), normalScale: new THREE.Vector2(0.4, 0.4),
   roughnessMap: grimeR,
   clearcoat: 0.7, clearcoatRoughness: 0.25, // 设备漆面
   envMapIntensity: 0.85,
 })
 
-/** 电机橙（R9：metalness 0.22 → 0.08 —— 漆面非金属化） */
+/** 电机橙（R9：metalness 0.22 → 0.08；R10：0.08 → 0.0 漆面二值化收尾） */
 export const motorOrange = () => mat('motor', {
-  color: 0xd97a1e, metalness: 0.08, roughness: 0.5 / GRIME_BASE,
+  color: 0xd97a1e, metalness: 0.0, roughness: 0.5 / GRIME_BASE,
   map: paintedTexture(0xd97a1e), normalMap: paintedNormal(), normalScale: new THREE.Vector2(0.4, 0.4),
   roughnessMap: grimeR,
   clearcoat: 0.65, clearcoatRoughness: 0.28,
@@ -133,10 +134,11 @@ export const motorEndBell = () => mat('bell', {
 })
 
 /** 管线材质（按物料颜色）—— 环氧涂装钢管：漆膜非金属化（R9 metalness 0.65 → 0.12；
- *  大厂 PBR 铁律：涂层钢管亮度来自 diffuse 基色 + clearcoat 清漆，而非金属反射） */
+ *  R10：0.12 → 0.0 二值化收尾 —— 大厂 PBR 铁律：涂层钢管亮度来自 diffuse 基色 +
+ *  clearcoat 清漆，而非金属反射；Painted metal 基准 metalness 0.0） */
 export const pipeMaterial = (color: number, emissive = 0) =>
   mat(`pipe_${color}_${emissive}`, {
-    color, metalness: 0.12, roughness: 0.35, emissive, emissiveIntensity: emissive ? 0.05 : 0,
+    color, metalness: 0.0, roughness: 0.35, emissive, emissiveIntensity: emissive ? 0.05 : 0,
     clearcoat: 0.5, clearcoatRoughness: 0.3,
     envMapIntensity: 1.05,
   })

@@ -6,3 +6,5 @@ dist
 install*.log
 npm-ver.txt
 .shots
+
+dist-bak-*

@@ -59,6 +59,8 @@ export interface TimePreset {
   /** 月光补光（仅夜景 >0） */
   moonLight: number
   starsOpacity: number
+  /** 云影地面投影强度（R10 P0：午后 0.22 / 黄昏 0.15 / 夜景 0.02） */
+  cloudShadow: number
   /** 地面反弹色（IBL 下半球，[r,g,b] 线性） */
   bounceGround: [number, number, number]
 }
@@ -100,6 +102,7 @@ export const TIME_PRESETS: Record<PresetName, TimePreset> = {
     shadowTint: 0x6a7280, highlightTint: 0xffe2b0, gradingAmount: 0.12,
     streetLight: 0, streetLampEi: 0.25,
     moonLight: 0, starsOpacity: 0,
+    cloudShadow: 0.22,
     bounceGround: [0.32, 0.28, 0.21],
   },
   dusk: {
@@ -121,6 +124,7 @@ export const TIME_PRESETS: Record<PresetName, TimePreset> = {
     shadowTint: 0x5f6572, highlightTint: 0xffc890, gradingAmount: 0.2,
     streetLight: 50, streetLampEi: 6,
     moonLight: 0, starsOpacity: 0,
+    cloudShadow: 0.15,
     bounceGround: [0.28, 0.2, 0.14],
   },
   night: {
@@ -142,6 +146,7 @@ export const TIME_PRESETS: Record<PresetName, TimePreset> = {
     shadowTint: 0x35436b, highlightTint: 0xffc890, gradingAmount: 0.26,
     streetLight: 320, streetLampEi: 9,
     moonLight: 2.3, starsOpacity: 0.85,
+    cloudShadow: 0.02,
     bounceGround: [0.1, 0.12, 0.2],
   },
 }
@@ -179,6 +184,8 @@ export class TimeOfDaySystem {
   private renderer: THREE.WebGLRenderer
   private scene: THREE.Scene
   private fog: THREE.Fog
+  /** R10 云影地面投影贴片（环境构建后注入，按档位调 opacity） */
+  private cloudShadows: THREE.Mesh[]
 
   private current: PresetName = 'dusk'
   private trans: { from: TimePreset; to: TimePreset; t0: number; dur: number } | null = null
@@ -189,13 +196,14 @@ export class TimeOfDaySystem {
   private sunDirVec = new THREE.Vector3(...TIME_PRESETS.dusk.sunDir).normalize()
   private now = 0
 
-  constructor(rig: SkyRig, lights: LightHandles, passes: PassHandles, scene: THREE.Scene, renderer: THREE.WebGLRenderer) {
+  constructor(rig: SkyRig, lights: LightHandles, passes: PassHandles, scene: THREE.Scene, renderer: THREE.WebGLRenderer, cloudShadows: THREE.Mesh[] = []) {
     this.rig = rig
     this.lights = lights
     this.passes = passes
     this.scene = scene
     this.renderer = renderer
     this.fog = scene.fog as THREE.Fog
+    this.cloudShadows = cloudShadows
     // 初始：黄昏档直接落位（与 R7 外观基线一致，但含提亮修正）
     this.apply(TIME_PRESETS.dusk, 1)
     // 首帧 IBL 烘焙（成本与 R7 相同）
@@ -282,7 +290,7 @@ export class TimeOfDaySystem {
     'fogColor', 'fogNear', 'fogFar', 'exposure',
     'godRaysStrength', 'vignetteIntensity',
     'shadowTint', 'highlightTint', 'gradingAmount',
-    'streetLight', 'streetLampEi', 'moonLight', 'starsOpacity',
+    'streetLight', 'streetLampEi', 'moonLight', 'starsOpacity', 'cloudShadow',
   ] as const
 
   /** 数值字段统一插值（避免逐字段硬编码） */
@@ -324,6 +332,11 @@ export class TimeOfDaySystem {
 
     // ── 天空/星层 ──
     this.rig.applySkyState(m)
+
+    // ── R10 云影投影强度（午后强 / 黄昏弱 / 夜景近无） ──
+    for (const sh of this.cloudShadows) {
+      ;(sh.material as THREE.MeshBasicMaterial).opacity = m.cloudShadow
+    }
 
     // ── IBL / 雾 / 曝光 ──
     this.scene.environmentIntensity = m.envIntensity

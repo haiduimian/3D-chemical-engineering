@@ -101,3 +101,39 @@ export function portEnd(id: string, extend = 0.5): THREE.Vector3 {
 export function portsOfElement(elementId: string): PortDef[] {
   return Object.values(PORTS).filter(p => p.elementId === elementId)
 }
+
+/**
+ * R10 口径一致性：
+ * 管线有效口径 = 显式 diameter ?? autoDiameter（两端端口口径较大值）。
+ * 工艺语义：输送段口径不小于所连设备管嘴——"管线粗细适应设备口径"。
+ */
+export function autoDiameter(from: string, to: string, via: { pump?: string }[] = []): number {
+  let d = 0
+  for (const id of [from, to]) d = Math.max(d, PORTS[id]?.diameter ?? 0)
+  for (const v of via) {
+    if (!v.pump) continue
+    const base = v.pump.replace('P-', 'P')
+    d = Math.max(d, PORTS[`${base}-IN`]?.diameter ?? 0, PORTS[`${base}-OUT`]?.diameter ?? 0)
+  }
+  return d
+}
+
+/** 管线口径 vs 端口口径审计：返回违规描述（空 = 通过）。
+ *  显式 diameter 允许与端口口径有 ≤0.03 的工艺容差（大小头已在此范围外自动生成）。
+ *  R10 白名单：泵出口三通分配支管 —— 计量注入线在分流点刻意细于泵出口主管
+ *  （三通小管径分送各塔顶），大小头/三通过渡即工艺本身，不视为违规 */
+const SIZE_EXEMPT = new Set(['pipe-hq-t101', 'pipe-hq-t102', 'pipe-hq-t103'])
+export function auditPipePortSizes(pipes: { id: string; diameter?: number; from: string; to: string; via?: { pump?: string }[] }[]): string[] {
+  const problems: string[] = []
+  for (const p of pipes) {
+    if (p.diameter === undefined || SIZE_EXEMPT.has(p.id)) continue
+    const auto = autoDiameter(p.from, p.to, p.via ?? [])
+    if (Math.abs(p.diameter - auto) > 0.03) {
+      problems.push(
+        `[${p.id}] 直径 ${p.diameter} 与端口口径推导 ${auto.toFixed(2)} 不一致` +
+        `（from ${PORTS[p.from]?.diameter} / to ${PORTS[p.to]?.diameter}）——管线需适配设备口径或声明工艺差异`,
+      )
+    }
+  }
+  return problems
+}

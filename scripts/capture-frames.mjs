@@ -136,6 +136,7 @@ try {
     out.emissiveCount = em.length
     out.emissiveIntensities = em.map(e => e.tag + ':' + e.ei.toFixed(2))
     out.invariants = (typeof window.__ps.invariants !== 'undefined') ? window.__ps.invariants : 'n/a'
+    out.sizeAudit = (typeof window.__ps.sizeAudit !== 'undefined') ? window.__ps.sizeAudit : 'n/a'
     return JSON.stringify(out)
   })()`)
   writeFileSync(join(outDir, 'scene-snapshot.json'), snap, 'utf8')

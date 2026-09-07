@@ -7,7 +7,7 @@ import { SSAOPass } from 'three/examples/jsm/postprocessing/SSAOPass.js'
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js'
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js'
 import { EQUIPMENTS, PIPES, CAMERA_TOURS, type EquipmentDef } from '../layout/plantLayout'
-import { PORTS } from '../layout/ports'
+import { PORTS, auditPipePortSizes } from '../layout/ports'
 import { buildEquipment } from '../shapes/plantShapes'
 import { buildPipe, animatePipes, animateGauges, setPipeHighlight, setPipeHeat, resetPipeHeat, type BuiltPipe } from '../connectors/pipes'
 import { pipeMidpoint } from '../connectors/path'
@@ -15,7 +15,7 @@ import { buildEnvironment, buildWarningLights, animateSteam, animateFlare, anima
 import { TimeOfDaySystem, normalizedTint, type PresetName } from '../env/timeOfDay'
 import { MockDataSource, TAG_MAP, norm, type TickCallback, type DeviceState } from '../data/processData'
 import { LeakEffect, FireEffect, buildHazardZones } from '../effects/safety'
-import { FirstPerson, PATROL_POINTS } from '../navigation/firstPerson'
+import { FirstPerson, PATROL_POINTS, buildPatrolColliders, resolveCollision, type Collider } from '../navigation/firstPerson'
 import { PIPE_COLORS } from '../materials/pbr'
 import { assertEmissionInvariants } from './emissionInvariants'
 
@@ -250,9 +250,18 @@ export class PlantScene {
   readonly timeSystem: TimeOfDaySystem
   /** R9 性能统计（每 1s 采样，供性能面板/验收读取） */
   readonly perfStats = { fps: 0, calls: 0, tris: 0, textures: 0, tier: 'weak' as string }
+  /** R10：帧级真实绘制统计（composer.render() 后采样、随即归零；1s 节流面板读此快照） */
+  private frameCalls = 0
+  private frameTris = 0
   private perfFrames = 0
   private perfLast = 0
   private qualityTier: 'weak' | 'mid' | 'strong' = 'strong'
+  /** R10 管线-端口口径审计（空 = 通过；capture-frames 快照读取） */
+  readonly sizeAudit: string[] = []
+  /** R10 巡检碰撞体表（FirstPerson 注入 + 自动化测试读取） */
+  readonly patrolColliders: Collider[] = []
+  /** R10 碰撞求解器（自动化测试注入用：walk-into-wall 断言） */
+  readonly collisionResolve: (pos: { x: number; z: number }, dx: number, dz: number, cs: Collider[]) => { x: number; z: number } = resolveCollision
 
   // 回调
   onSelect: (id: string | null) => void = () => {}
@@ -293,7 +302,14 @@ export class PlantScene {
     // 工业可视化首选；若需更强"电影感"可切回 ACESFilmicToneMapping
     renderer.toneMapping = THREE.AgXToneMapping
     // 曝光由时段系统按预设托管（N1：黄昏 1.05，午后 1.12，夜景 1.35）
-    ;(renderer.shadowMap as any).blurSamples = 8 // 落日柔和长影
+    // R10 参数勘误：原 `shadowMap.blurSamples = 8`（注释"落日柔和长影"）为 VSM 专用参数，
+    // PCFSoftShadowMap 下完全无效（官方 LightShadow 文档：blurSamples 仅 VSMShadowMap 读取）；
+    // PCFSoft 的柔和度由固定 3x3 高斯内核决定，shadow.radius 同样被忽略 → 已删除死参数。
+    // 若下轮要"更柔长影"，正道是切 VSMShadowMap + radius/blurSamples（需验收漏光）
+    // R10 性能面板可信度修复：EffectComposer 一帧内多次 renderer.render()，
+    // info.autoReset=true 时每次 render 后计数清零 → 面板读到的是"末位全屏 quad"的 1 次
+    // 调用（实测真值 14012 calls/2411 meshes）。改为手动累计：每秒采样后归零
+    renderer.info.autoReset = false
     // 像素比：高分屏（DPI>1）必须按设备像素比渲染，否则全局模糊（拉远更明显）
     // 弱机降到 1 保帧率，其余封顶 2 兼顾清晰度与性能
     renderer.setPixelRatio(weak ? 1 : Math.min(window.devicePixelRatio, 2))
@@ -405,6 +421,7 @@ export class PlantScene {
       },
       this.diagram.scene,
       renderer,
+      env.cloudShadows,
     )
     this.perfStats.tier = qualityTier
     this.perfLast = performance.now()
@@ -415,6 +432,14 @@ export class PlantScene {
     this.buildPanels()
     this.diagram.scene.add(this.barRoot)
     this.barRoot.visible = false
+
+    // R10 口径一致性审计（管线 vs 设备端口）：violations 为空 = 通过；
+    // 验收工具（capture-frames snapshot）读取并纳入回归
+    this.sizeAudit = auditPipePortSizes(PIPES)
+    if (this.sizeAudit.length) console.error('⚠ PipeSizeAudit:', this.sizeAudit)
+
+    // R10 巡检碰撞体（设备/围堰/管廊柱 AABB 表，供 FirstPerson 滑移碰撞）
+    this.patrolColliders = buildPatrolColliders()
 
     this.diagram.renderer.domElement.addEventListener('pointerdown', this.onPointerDown)
     this.diagram.renderer.domElement.addEventListener('pointerup', this.onPointerUp)
@@ -780,6 +805,7 @@ export class PlantScene {
       this.diagram.controls.enabled = false
 
       this.firstPerson = new FirstPerson(this.diagram.camera, this.diagram.renderer.domElement)
+      this.firstPerson.setColliders(this.patrolColliders)
       this.firstPerson.onLockChange = locked => {
         if (!locked) {
           // E 键 / Esc 退出：dispose 移除 PointerLockControls 监听（防残留意外锁定）+ 恢复自由视角
@@ -876,15 +902,16 @@ export class PlantScene {
     // N1 时段系统：每帧推进过渡插值（无过渡时近乎零开销）
     this.timeSystem.update(t)
 
-    // R9 性能采样（1s 节流，渲染器 info 读取）
+    // R9 性能采样（1s 节流）；R10：面板值改读"上一帧"真实累计快照
+    // （composer 一帧内多次 renderer.render()，autoReset=true 时 info 只反映末位全屏 quad
+    //  → 旧面板恒显示 calls=1；实测真值 14012 calls / 1.65M tris）
     this.perfFrames++
     const nowMs = performance.now()
     if (nowMs - this.perfLast >= 1000) {
-      const info = this.diagram.renderer.info
       this.perfStats.fps = Math.round(this.perfFrames * 1000 / (nowMs - this.perfLast))
-      this.perfStats.calls = info.render.calls
-      this.perfStats.tris = info.render.triangles
-      this.perfStats.textures = info.memory.textures
+      this.perfStats.calls = this.frameCalls
+      this.perfStats.tris = this.frameTris
+      this.perfStats.textures = this.diagram.renderer.info.memory.textures
       this.perfFrames = 0
       this.perfLast = nowMs
     }
@@ -980,6 +1007,14 @@ export class PlantScene {
 
     // 渲染（接管后由后处理管线输出）
     this.composer?.render()
+
+    // R10：帧级真实绘制统计 —— composer.render() 结束后 info 内是本帧全部
+    // pass（RenderPass/SSAO/Bloom/GodRays/分级/晕影/Output）的累计值，
+    // 采样进快照后立即归零（autoReset=false 范式）
+    const info = this.diagram.renderer.info
+    this.frameCalls = info.render.calls
+    this.frameTris = info.render.triangles
+    info.reset()
   }
 
   /** 窗口缩放同步后处理尺寸 */

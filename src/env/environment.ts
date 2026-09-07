@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import { concrete, structuralSteel, machinedSteel, paintedSteel } from '../materials/pbr'
+import { concrete, structuralSteel, machinedSteel, paintedSteel, pipeMaterial } from '../materials/pbr'
 import { SkyRig } from './sky'
 import type { LightHandles } from './timeOfDay'
 
@@ -1041,35 +1041,73 @@ function buildGroundStains(scene: THREE.Scene) {
 /** 落日光晕已由物理天空渲染（Preetham 米氏散射自带太阳圆盘与光晕），假圆盘移除 */
 
 /** 云层（R3：双层——暖亮云带 + 深灰暗云，黄昏天空纵深） */
-function buildClouds(scene: THREE.Scene): THREE.Group {
+/**
+ * 云层（R10 增强）：A 层暖云 + B 层暗云 + 每朵云的地面软影贴片（云影投影，P0）。
+ * 贴片挂载为云 mesh 的子物体：云随组整体旋转（animateClouds 旋转 cloudGroup），
+ * 影子同步绕场心移动 —— 午后天光下的移动云影是"活"的氛围层。
+ * 返回 cloudShadows 供时段系统按档位调 opacity（午后 0.22 / 黄昏 0.15 / 夜景 0.02）。
+ */
+function buildClouds(scene: THREE.Scene, weak = false): { group: THREE.Group, shadows: THREE.Mesh[] } {
   const cloudGroup = new THREE.Group()
   // A 层：夕照暖云（亮）
   const cloudMatA = new THREE.MeshBasicMaterial({ color: 0xf0b27a, transparent: true, opacity: 0.16, fog: false })
   // B 层：深灰暗云（对比层，压出云隙亮边）
   const cloudMatB = new THREE.MeshBasicMaterial({ color: 0x544e4a, transparent: true, opacity: 0.13, fog: false })
+  // 云影贴片材质：径向渐变软影（黑色中心 → 透明边缘），共享 2 份
+  const shadowTex = makeCloudShadowTexture()
+  const shadowMatA = new THREE.MeshBasicMaterial({
+    map: shadowTex, transparent: true, opacity: 0.16,
+    depthWrite: false, fog: false, color: 0x0c1014,
+  })
+  const shadowMatB = shadowMatA.clone()
+  const shadows: THREE.Mesh[] = []
   let seed = 7
   const rnd = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647 }
-  for (let i = 0; i < 8; i++) {
-    const w = 40 + rnd() * 60
-    const cloud = new THREE.Mesh(new THREE.PlaneGeometry(w, 8 + rnd() * 6), cloudMatA)
+  const mkCloud = (w: number, mat: THREE.Material, y: number, shadowMax: number) => {
+    const cloud = new THREE.Mesh(new THREE.PlaneGeometry(w, 8 + rnd() * 6), mat)
     const angle = rnd() * Math.PI * 2
     const dist = 200 + rnd() * 120
-    cloud.position.set(Math.cos(angle) * dist, 90 + rnd() * 50, Math.sin(angle) * dist)
+    cloud.position.set(Math.cos(angle) * dist, y, Math.sin(angle) * dist)
     cloud.lookAt(0, 60, 0)
     cloudGroup.add(cloud)
+    if (!weak) {
+      // 地面软影：镜像到 y=0.07（贴地防 z-fight），尺寸略收于云（阴影收缩）
+      const sh = new THREE.Mesh(new THREE.PlaneGeometry(w * 0.8, 10), shadowMatA)
+      sh.rotation.x = -Math.PI / 2
+      sh.position.y = -(cloud.position.y - 0.07)
+      sh.material = shadowMax >= 0.5 ? shadowMatA : shadowMatB
+      cloud.add(sh)
+      shadows.push(sh)
+    }
+    return cloud
+  }
+  for (let i = 0; i < 8; i++) {
+    const w = 40 + rnd() * 60
+    mkCloud(w, cloudMatA, 90 + rnd() * 50, 1)
   }
   // B 层暗云（数量少、更散、偏高，缓慢对照）
   for (let i = 0; i < 5; i++) {
     const w = 50 + rnd() * 70
-    const cloud = new THREE.Mesh(new THREE.PlaneGeometry(w, 10 + rnd() * 8), cloudMatB)
-    const angle = rnd() * Math.PI * 2
-    const dist = 230 + rnd() * 110
-    cloud.position.set(Math.cos(angle) * dist, 110 + rnd() * 45, Math.sin(angle) * dist)
-    cloud.lookAt(0, 60, 0)
-    cloudGroup.add(cloud)
+    mkCloud(w, cloudMatB, 110 + rnd() * 45, 0.4)
   }
   scene.add(cloudGroup)
-  return cloudGroup
+  return { group: cloudGroup, shadows }
+}
+
+/** 云影径向渐变贴图（256×256：中心 0.9 黑 → 均匀淡出 → 透明） */
+function makeCloudShadowTexture(): THREE.CanvasTexture {
+  const canvas = document.createElement('canvas')
+  canvas.width = 256; canvas.height = 256
+  const ctx = canvas.getContext('2d')!
+  const g = ctx.createRadialGradient(128, 128, 10, 128, 128, 128)
+  g.addColorStop(0, 'rgba(255,255,255,0.9)')
+  g.addColorStop(0.55, 'rgba(255,255,255,0.55)')
+  g.addColorStop(1, 'rgba(255,255,255,0)')
+  ctx.fillStyle = g
+  ctx.fillRect(0, 0, 256, 256)
+  const tex = new THREE.CanvasTexture(canvas)
+  tex.colorSpace = THREE.SRGBColorSpace
+  return tex
 }
 
 /** 驱动云层缓慢漂移（渲染循环调用）：整体绕场心慢转 + 轻微起伏 */
@@ -1097,7 +1135,7 @@ export function animateCityBeacons(beacons: THREE.Mesh[], t: number) {
  */
 export function buildEnvironment(scene: THREE.Scene, renderer?: THREE.WebGLRenderer, weak = false, quality?: { shadowSize: number; coreShadow: boolean }): {
   steamPuffs: SteamPuff[], flame: THREE.Mesh, dust: THREE.Points | null,
-  clouds: THREE.Group, cityBeacons: THREE.Mesh[],
+  clouds: THREE.Group, cloudShadows: THREE.Mesh[], cityBeacons: THREE.Mesh[],
   rig: SkyRig, lights: LightHandles,
 } {
   // ── 物理天空 + IBL（N1：SkyRig 支持多预设懒烘焙，时段系统接管） ──
@@ -1154,15 +1192,44 @@ export function buildEnvironment(scene: THREE.Scene, renderer?: THREE.WebGLRende
   scene.add(dike)
 
   // ── 管廊（东西向 z=-6 与 z=28 两道，三层结构） ──
+  // R10（N3-管廊完善）：柱基混凝土墩 + 每两跨 X 斜撑 + 公用工程管线层（5 条贯穿小线
+  //   + 每 8m 管托 + 端部放空短管）—— 管廊"密而不乱"的承载语义
   const rack = new THREE.Group()
+  const rackUtilMat = (color: number) => pipeMaterial(color)
+  // 公用管线色带（工艺惯例）：蒸汽白 / 冷却水蓝 / 仪表风灰 / 氮气 / 污水绿
+  const rackUtils = [
+    { color: 0xe8e6e0, r: 0.09 }, { color: 0x5a86c8, r: 0.075 }, { color: 0x9aa4ad, r: 0.07 },
+    { color: 0x82898f, r: 0.08 }, { color: 0x6a9a6a, r: 0.065 },
+  ] as const
   const mkRack = (z: number, x0: number, x1: number) => {
     const bays = Math.floor((x1 - x0) / 8)
+    // 柱 + 混凝土柱基墩
+    const pierMat = concrete()
     for (let i = 0; i <= bays; i++) {
       const x = x0 + i * 8
       for (const s of [-1, 1]) {
         const col = new THREE.Mesh(new THREE.BoxGeometry(0.4, 7, 0.4), structuralSteel())
         col.position.set(x, 3.5, z + s * 2)
         rack.add(col)
+        // R10 柱基墩（承台，防"插地式"漂移感）
+        const pier = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.5, 1.2), pierMat)
+        pier.position.set(x, 0.25, z + s * 2)
+        rack.add(pier)
+      }
+    }
+    // R10 X 斜撑（每两跨一组：细圆柱对角交叉，结构"撑得住"）
+    const xbMat = structuralSteel()
+    for (let i = 0; i + 2 <= bays; i += 2) {
+      const xa = x0 + i * 8, xb = x0 + (i + 2) * 8
+      for (const s of [-1, 1]) {
+        const len = Math.hypot(xb - xa, 6.2)
+        for (const dir of [1, -1]) {
+          const brace = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, len, 6), xbMat)
+          const mx = (xa + xb) / 2
+          brace.position.set(mx, 0.4 + 3.1, z + s * 2)
+          brace.rotation.z = dir * Math.atan2(6.2, xb - xa)
+          rack.add(brace)
+        }
       }
     }
     for (const y of [3, 5.5, 7]) {
@@ -1190,6 +1257,35 @@ export function buildEnvironment(scene: THREE.Scene, renderer?: THREE.WebGLRende
       b.position.set(x0 + (i + 0.5) * 8, 7.6, z)
       rack.add(b)
     }
+    // R10 公用工程管线层：第二梁层（5.5）上方 0.9m 处 5 条贯穿小线 + 管托 + 端部放空
+    const utilY = 6.45
+    const utilMats = rackUtils.map(u => rackUtilMat(u.color))
+    rackUtils.forEach((u, k) => {
+      const zz = z + (k - 2) * 0.55
+      const line = new THREE.Mesh(new THREE.CylinderGeometry(u.r, u.r, x1 - x0, 10), utilMats[k])
+      line.rotation.z = Math.PI / 2
+      line.position.set((x0 + x1) / 2, utilY, zz)
+      rack.add(line)
+      // 端部封头 + 放空短管（东端立管示意）
+      const cap = new THREE.Mesh(new THREE.CylinderGeometry(u.r * 0.55, u.r, 0.3, 8), utilMats[k])
+      cap.rotation.z = Math.PI / 2
+      cap.position.set(x1 + 0.3, utilY, zz)
+      rack.add(cap)
+      const vent = new THREE.Mesh(new THREE.CylinderGeometry(u.r * 0.4, u.r * 0.4, 2.2, 8), utilMats[k])
+      vent.position.set(x0 + 0.4, utilY + 1.1, zz)
+      rack.add(vent)
+    })
+    // 管托横梁（每 8m 一档，管线担于其上）
+    const supportGeo = new THREE.BoxGeometry(3.4, 0.09, 0.22)
+    const supportCount = bays + 1
+    const supports = new THREE.InstancedMesh(supportGeo, structuralSteel(), supportCount)
+    const m4 = new THREE.Matrix4()
+    for (let i = 0; i <= bays; i++) {
+      m4.setPosition(x0 + i * 8, utilY - 0.12, z)
+      supports.setMatrixAt(i, m4)
+    }
+    supports.instanceMatrix.needsUpdate = true
+    rack.add(supports)
   }
   mkRack(-6, -60, 30)   // 主管廊（罐区↔反应区）
   mkRack(28, 15, 45)    // 塔区↔球罐支廊
@@ -1214,7 +1310,9 @@ export function buildEnvironment(scene: THREE.Scene, renderer?: THREE.WebGLRende
   sun.castShadow = true
   const shadowSize = quality?.shadowSize ?? 4096
   sun.shadow.mapSize.set(shadowSize, shadowSize)
-  sun.shadow.radius = 4 // 落日柔和长影（PCFSoft 下依赖 mapSize 尺寸与相机包围盒）
+  // R10 参数勘误：PCFSoftShadowMap 下 shadow.radius 被渲染器忽略（radius 仅 PCF/VSM 生效），
+  // 柔和度实际由 PCFSoft 固定内核 + 纹素密度（mapSize/视场覆盖）决定 → 保留赋值仅作 VSM 预留
+  sun.shadow.radius = 4
   sun.shadow.autoUpdate = false
   // v11 阴影相机收紧 ~15%：原 ±150/120/-140 覆盖 300m 摊薄阴影贴图（13.6px/m），
   // 收紧后 ~255m → 纹素密度 +17%（设备区阴影更锐利）。需保留长影方向（+x/-z）
@@ -1280,7 +1378,9 @@ export function buildEnvironment(scene: THREE.Scene, renderer?: THREE.WebGLRende
   buildSafetyMarkings(scene)
 
   // ── 天空氛围（太阳圆盘/光晕已由物理天空承担） ──
-  const clouds = buildClouds(scene)
+  const cloudPack = buildClouds(scene, weak)
+  const clouds = cloudPack.group
+  const cloudShadows = cloudPack.shadows
   buildHorizonHaze(scene)
 
   // ── 厂区绿化（黄昏剪影） ──
@@ -1298,7 +1398,7 @@ export function buildEnvironment(scene: THREE.Scene, renderer?: THREE.WebGLRende
   }
 
   return {
-    steamPuffs, flame, dust, clouds, cityBeacons, rig,
+    steamPuffs, flame, dust, clouds, cloudShadows, cityBeacons, rig,
     lights: { sun, fill, rim, core, moon, hemi, streets: streetLights, streetLampMat },
   }
 }
